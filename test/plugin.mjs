@@ -396,12 +396,46 @@ await ok('java/save、java/unsave、java/start-saved 都能给出可读结果', 
     assert.equal(unsavePayload.ok, true, unsave.body);
     assert.ok(Array.isArray(unsavePayload.saved));
 });
+await ok('java/start-all 与状态轮询路由都已挂载', async () => {
+    const route = registered.routes[0];
+    const post = (path, payload) => ({
+        url: `${path}?cwd=${encodeURIComponent(projectDir)}`,
+        method: 'POST',
+        headers: {},
+        async *[Symbol.asyncIterator]() {
+            yield Buffer.from(JSON.stringify(payload), 'utf8');
+        },
+    });
+    const get = (path) => ({
+        url: `${path}?cwd=${encodeURIComponent(projectDir)}`,
+        method: 'GET',
+        headers: {},
+        async *[Symbol.asyncIterator]() {},
+    });
+
+    // 一个配方都没保存：一键启动要说清楚，不能 404 也不能抛
+    const empty = createMockResponse();
+    await route.handler(post('/dsh-api-runner/api/java/start-all', {}), empty);
+    const emptyPayload = JSON.parse(empty.body);
+    assert.equal(emptyPayload.ok, false, empty.body);
+    assert.equal(emptyPayload.code, 'NOTHING_SAVED');
+
+    // 状态路由：查不存在的批次给 NO_BATCH（证明路由存在且不崩）
+    const status = createMockResponse();
+    await route.handler(get('/dsh-api-runner/api/java/start-all/status?batch=nope'), status);
+    const statusPayload = JSON.parse(status.body);
+    assert.equal(statusPayload.ok, false, status.body);
+    assert.equal(statusPayload.code, 'NO_BATCH');
+});
+
 await ok('工具 action 里有 login 与 java', () => {
     const tool = registered.tools[0];
     const actions = tool.parameters.properties.action.enum;
     assert.ok(actions.includes('login'));
     assert.ok(actions.includes('java'));
     assert.ok(tool.parameters.properties.token_from, '应有 token_from 参数');
+    assert.ok(tool.parameters.properties.java_action.enum.includes('start_all'), 'java_action 应有 start_all');
+    assert.ok(tool.parameters.properties.java_ids, '应有 java_ids 参数');
 });
 
 // ---- 清理 ----

@@ -61,8 +61,13 @@ const PARAMETERS = {
         log_id: { type: 'string', description: '日志 id 或 name（log、wait_log、reset_log 用；省略时取第一个日志）' },
         java_action: {
             type: 'string',
-            enum: ['list', 'start', 'stop', 'restart', 'log', 'status', 'detail', 'ignore', 'unignore', 'save', 'unsave', 'start_saved', 'settings'],
-            description: 'Java 服务动作（action=java 用）：list 列出；detail 服务详情+日志；start 接管启动（先编译再杀旧进程）；stop/restart 只对插件启动的生效；log 读日志；ignore/unignore 在面板列表中隐藏/恢复；save 把当前进程的启动配方向保存下来（之后不用 IDEA 也能起）；unsave 删除保存；start_saved 按保存的配置启动；settings 读写插件设置（数据目录/默认工作区）',
+            enum: ['list', 'start', 'stop', 'restart', 'log', 'status', 'detail', 'ignore', 'unignore', 'save', 'unsave', 'start_saved', 'start_all', 'settings'],
+            description: 'Java 服务动作（action=java 用）：list 列出；detail 服务详情+日志；start 接管启动（先编译再杀旧进程）；stop/restart 只对插件启动的生效；log 读日志；ignore/unignore 在面板列表中隐藏/恢复；save 把当前进程的启动配方向保存下来（之后不用 IDEA 也能起）；unsave 删除保存；start_saved 按保存的配置启动一个；start_all 一键启动所有已保存的服务（已运行的跳过，单个失败不影响其余，返回每个的成败）；settings 读写插件设置（数据目录/默认工作区）',
+        },
+        java_ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'java_action=start_all 时只启动这些服务（省略则启动全部已保存的）',
         },
         pid: { type: 'number', description: '要接管的 Java 进程 pid（java_action=start 用）' },
         java_id: { type: 'string', description: '插件托管的服务名或 pid（java_action=stop/restart/log/save/unsave/start_saved 用）' },
@@ -185,6 +190,18 @@ async function runTool(service, args, projectPath) {
                     port: args.port ? Number(args.port) : 0,
                     debug: args.debug ? String(args.debug) : 'port',
                     timeoutMs,
+                });
+            }
+            // 一键启动：把「已保存」里的服务全拉起来（或只拉 java_ids 列的那几个）
+            if (javaAction === 'start_all') {
+                const ids = Array.isArray(args.java_ids)
+                    ? args.java_ids.map((id) => String(id))
+                    : (args.java_id ? [String(args.java_id)] : []);
+                return service.startAllSavedJava(projectPath, ids, {
+                    compile: args.compile !== false,
+                    restart: args.restart === true,
+                    timeoutMs,
+                    compileTimeoutMs: args.timeout_ms ? Number(args.timeout_ms) : undefined,
                 });
             }
             if (javaAction === 'settings') {
@@ -546,6 +563,18 @@ async function handleHttp(req, res, service, projectOf) {
             port: Number(body.port) || 0,
             timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
         }));
+    }
+    // 一键启动：后台跑，立刻返回批次 id；面板轮询 java/start-all/status 看进度
+    if (route === 'java/start-all' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, service.startSavedJavaBatch(pickCwd(cwd, url, body), Array.isArray(body.ids) ? body.ids : [], {
+            compile: body.compile !== false,
+            restart: body.restart === true,
+            timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
+        }));
+    }
+    if (route === 'java/start-all/status' && req.method === 'GET') {
+        return send(200, service.startBatchStatus(url.searchParams.get('batch') || ''));
     }
     if (route === 'settings' && req.method === 'GET') {
         return send(200, service.settings());

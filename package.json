@@ -1,6 +1,6 @@
 {
   "name": "dsh-api-runner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 插件：按配置调用后端 HTTP 接口、启停/重启本地开发服务、增量读取日志并等待日志特征，让模型能\"改完自己验\"。",
   "type": "module",
   "license": "MIT",
@@ -44,14 +44,6 @@
   "dependencies": {
     "yaml": "^2.8.0"
   },
-  "peerDependencies": {
-    "dsh-better-sidebar": ">=0.12.0"
-  },
-  "peerDependenciesMeta": {
-    "dsh-better-sidebar": {
-      "optional": true
-    }
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -59,7 +51,9 @@
     "client": {
       "platform": "web",
       "inject": [
-        "dsh-better-sidebar"
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   },

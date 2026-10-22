@@ -437,14 +437,8 @@ export function spawnService({ javaExe, argv, cwd, logPath }) {
     } catch {
         out = 'ignore';
     }
-    try {
-        const child = spawn(exe, argv, {
-            cwd: cwd || undefined,
-            detached: true,
-            stdio: ['ignore', out, out],
-            windowsHide: true,
-        });
-        child.unref();
+
+    const closeOut = () => {
         if (typeof out === 'number') {
             try {
                 fs.closeSync(out);
@@ -452,10 +446,47 @@ export function spawnService({ javaExe, argv, cwd, logPath }) {
                 /* 已交给子进程 */
             }
         }
-        return { ok: true, pid: child.pid, logPath: logPath || '' };
-    } catch (error) {
-        return { ok: false, message: `拉起进程失败：${error?.message || error}`, logPath: logPath || '' };
-    }
+    };
+
+    /**
+     * 返回 Promise：等到 'spawn' 或 'error' 再决定成败。
+     *
+     * 为什么不能直接返回 `{ok:true}`：可执行文件不存在时 spawn **不抛异常**，
+     * 而是异步发 'error'；没有监听器时 Node 把它当未捕获异常，会把 DSH 整个进程崩掉。
+     * 一键启动要连续拉起多个服务，其中一个 javaExe 配错（换机器、JDK 路径变了）
+     * 就足以让宿主挂掉，所以这里必须挂监听器，并且如实报告失败原因。
+     */
+    return new Promise((resolve) => {
+        let child;
+        try {
+            child = spawn(exe, argv, {
+                cwd: cwd || undefined,
+                detached: true,
+                stdio: ['ignore', out, out],
+                windowsHide: true,
+            });
+        } catch (error) {
+            closeOut();
+            resolve({ ok: false, message: `拉起进程失败：${error?.message || error}`, logPath: logPath || '' });
+            return;
+        }
+
+        let settled = false;
+        const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            closeOut();
+            resolve(value);
+        };
+
+        child.once('error', (error) => {
+            settle({ ok: false, message: `拉起进程失败：${error?.message || error}`, logPath: logPath || '' });
+        });
+        child.once('spawn', () => {
+            child.unref();
+            settle({ ok: true, pid: child.pid, logPath: logPath || '' });
+        });
+    });
 }
 
 /** 等端口开始 LISTENING（用 TCP 连接探测，不依赖 netstat） */

@@ -8,9 +8,11 @@
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/lhhzmz229/dsh-api-runner)
 -->
 
-DSH 插件：把「后端接口清单」「本地服务启停」「日志增量读取」三件事交给模型直接调用，并提供一个侧边栏面板做人工配置，形成「改完自己验」的闭环。
+DSH 插件：把「后端接口清单」「本地服务启停」「日志增量读取」三件事交给模型直接调用，并提供一个面板做人工配置，形成「改完自己验」的闭环。
 
-- **侧边栏面板「接口调试」**：可视化增删改接口配置、登录并保存 token、点按钮试调用、列出本机所有运行中的 Java 服务并一键设为 baseUrl。
+**不依赖任何第三方插件**：面板全部注册到 DSH 自带的席位（左栏全局页、右侧栏页签、设置页），装到任意一份 DSH 上都能用。
+
+- **面板「接口调试」**：可视化增删改接口配置、登录并保存 token、点按钮试调用、列出本机所有运行中的 Java 服务并一键设为 baseUrl。同一个面板出现在三处——左栏图标（中栏整页，无会话也能开）、右侧栏页签（和终端/文件/任务并列，边看对话边调试）、设置页里的插件主页（只放跨项目的全局项）。
 - **可配置接口**：在 YAML 里声明接口，或在面板里点选添加（方法、URL、请求头、body 模板），模型按 id 调用，占位符自动替换。
 - **登录态**：把某个接口标记为登录接口，调用成功后按 `tokenPath` 取出 token 存进项目档，后续接口自动注入 `Authorization`，不用手工复制。
 - **服务重启**：`managed` 模式由插件托管进程（能 start/stop/restart，DSH 重启后服务仍在跑）；`observe` 模式进程由 IDEA 启动，插件只轮询健康检查（配合 IDEA 的 restart 按钮）。
@@ -21,7 +23,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 
 ## 效果
 
-侧边栏「接口调试」的服务页：插件托管的 Java 服务按「已接管 / 运行中 / 已保存 / 已忽略」分组，业务 HTTP 端口与 Sentinel 之类的私有协议端口分开标注，每行可直接查询详情、重启、停止、保存启动配方。
+效果见下方截图（截图取自旧版，面板内容一致；新版入口在左栏图标、右侧栏页签和设置页）。
 
 ![服务页：已接管的 Java 服务](./docs/screenshot-service.png)
 
@@ -42,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.1.0`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.2.0`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -52,6 +54,18 @@ dsh plugin --profile web add github:lhhzmz229/dsh-api-runner
 
 DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 `dsh-api-runner@github:lhhzmz229/dsh-api-runner` 也等价。这条依赖本机有 `git`；装完重启 DSH（或把 `dsh-api-runner` bundle 关掉再打开）生效。
+
+### 从 0.1.x 升级
+
+0.2.0 有两个变化，**升级后需要硬刷新页面**（Ctrl/Cmd+Shift+R）：
+
+1. **不再依赖 `dsh-better-sidebar`**。面板改成注册到 DSH 自带的席位，所以：
+   - 装了 `dsh-better-sidebar` 的，那个侧边栏里不会再出现「接口调试」页签；
+   - 面板现在在左栏 ⚡ 图标（中栏整页）、右侧栏页签、设置 → 接口调试 三处。
+   - 顺带修掉一个老问题：旧版把 `betterSidebar` 写进 `inject`，没装那个插件时**整个 client half 不激活**，连设置页都不出现。
+2. **新增一键启动**：「已保存」页签顶部可以一次拉起所有配方（逐个编译，已在运行的跳过，单个失败不影响其余）。
+
+配置文件、面板数据、已保存的服务配方、日志目录都沿用原路径，升级不需要迁移。
 
 ### 本地开发：link 安装
 
@@ -77,8 +91,17 @@ Windows 下 link 路径写成 `link:D:/path/to/dsh-api-runner` 也等价。
 装好后 profile 的 `package.json` 会出现依赖 `dsh-api-runner` 与 `dsh.profile.bundles` 里的 `dsh-api-runner` 条目；
 插件自己的 `cordis.patch.yml` 负责把 entry 插进依赖树。
 
-侧边栏页签依赖 **`dsh-better-sidebar`** 插件（`dsh.client.inject` 里声明了它）。没装这个插件时，
-host 侧的工具（`ApiRunner`）与 HTTP 路由照常工作，只是不出现「接口调试」页签。
+侧边栏页签**不依赖任何第三方插件**。面板注册进 DSH 自带的 slot 席位：
+
+| 席位 | 面板形态 |
+| --- | --- |
+| `sidebar.panellist` + `main` | 左栏图标 → 中栏整页（和「插件」「任务计划」并列，无会话也能打开） |
+| `sidebar.right.pane.tab` + `.title` | 右侧栏页签（和终端/文件/任务并列，边看对话边调试） |
+| `settings.section` | 设置页里的插件主页（只放默认工作区、数据目录、Maven 主路径这类全局项） |
+
+这三个席位由 `@deepseek-ai/dsh-client-ui-sidebar` 和 `@deepseek-ai/dsh-client-ui-sidebar-right`
+（都是 DSH 自带）声明，所以任何一份完整 DSH 上都有。宿主侧的工具（`ApiRunner`）与 HTTP 路由
+不依赖这些席位，即使 UI 缺席位也照常工作。
 
 ## 权限与风险
 
@@ -98,7 +121,6 @@ host 侧的工具（`ApiRunner`）与 HTTP 路由照常工作，只是不出现�
 - **已验证环境**：DSH `0.2.1-alpha.1` / Windows
 - **Node.js**：`>=20`
 - **平台**：Windows / macOS / Linux（进程与端口发现按平台分流）
-- **可选依赖**：`dsh-better-sidebar`（提供侧边栏「接口调试」页签，不装则只有模型侧工具与 HTTP 路由）
 - **可选环境**：JDK（`jps` / `jcmd`，用于 Java 服务发现与接管）、Maven（`mvn`，用于接管时编译）
 
 ## 配置
@@ -180,7 +202,7 @@ logs:
 | `describe` | 列出可用接口、服务、日志（含每个接口需要的参数名），不返回 header 值 |
 | `call` | 按 `api_id` 调接口，`params` 传占位符；已保存 token 会自动注入 |
 | `login` | 调登录接口并把 token 存进项目档（`api_id` 指向配了 `login.tokenPath` 的接口） |
-| `java` | 本机 Java 服务：`java_action` = `list` / `detail`（详情+日志）/ `start`（接管启动）/ `stop` / `restart` / `log` / `ignore` / `unignore` / `save`（保存启动配方）/ `unsave` / `start_saved`（按配方启动，不需要 IDEA 里先有进程）/ `settings`（读或改全局设置）/ `status`，详见下文 |
+| `java` | 本机 Java 服务：`java_action` = `list` / `detail`（详情+日志）/ `start`（接管启动）/ `stop` / `restart` / `log` / `ignore` / `unignore` / `save`（保存启动配方）/ `unsave` / `start_saved`（按配方启动，不需要 IDEA 里先有进程）/ `start_all`（一键启动所有已保存的服务，可用 `java_ids` 只启部分）/ `settings`（读或改全局设置）/ `status`，详见下文 |
 | `service` | `service_action` = `start` / `stop` / `restart` / `wait` / `status` |
 | `log` | 增量读日志（`pattern` 正则过滤，`max_bytes` / `max_lines` 限流） |
 | `wait_log` | 等某个特征出现在日志里（`timeout_ms` 超时） |
@@ -198,16 +220,22 @@ flowchart LR
     M -->|"ApiRunner.log / wait_log"| LOG["日志文件<br/>按字节偏移增量读"]
     M -->|"ApiRunner.verify"| V["重启 → 等日志特征 → 调接口"]
     SVC -->|"stdout / stderr 追加"| LOG
-    UI["侧边栏「接口调试」"] -->|"增删改接口 · 登录存 token · 试调用"| API
+    UI["面板「接口调试」<br/>左栏整页 / 右侧栏页签 / 设置页"] -->|"增删改接口 · 登录存 token · 试调用"| API
     UI -->|"列出本机 Java 服务 · 接管 · 重启 · 看日志"| SVC
 ```
 
 典型的一轮「改完自己验」：改代码 → `service restart` → `wait_log` 等 `Started Application` →
 `call` 打接口看返回 → 不对就 `log` 拉最近几百字节定位报错。也可以直接用 `verify` 一条串起来。
 
-## 侧边栏面板
+## 面板
 
-插件在右侧栏注册了一个「接口调试」标签页（`betterSidebar.registerTab`，单个实例）。右侧栏很窄，所以内容分成三个页签，顶部固定、下方独立滚动，一次只看一块：
+同一个「接口调试」面板出现在三个入口，内容一致：
+
+- **左栏图标**（`sidebar.panellist` + `main`）：点 ⚡ 图标切到中栏整页。整页宽，适合配接口、看日志；没有会话时也能打开（host 回落到设置里的默认工作区）。
+- **右侧栏页签**（`sidebar.right.pane.tab`）：和终端/文件/任务页签并列，边看对话边调试。会话级，宽度窄，所以内容分成三个页签，顶部固定、下方独立滚动，一次只看一块。
+- **设置 → 接口调试**（`settings.section`）：只放默认工作区、数据目录、Maven 主路径这类跨项目的全局项。
+
+右侧栏很窄，所以下面按页签说明布局：
 
 **接口页签**
 - 顶部是**按项目分类**的二级页签（只有存在第二个项目时出现）：第一个永远是当前工作区，后面是其它已知项目（显示成末段目录名，重名时带上上一级；页签多了横向滚动）。二级页签没有灰底容器、选中项是品牌色实心块，和顶部那排灰底分段控件一眼能分开。
@@ -227,6 +255,12 @@ flowchart LR
 - 接管/重启时如果进程参数里读不到 `server.port`（端口常写在配置中心或外部配置文件里），插件会在进程起来后持续扫描真实监听端口并**回填到托管记录**，所以「已接管」里的端口与 `HTTP` 标注不会因为「参数里没端口」而空着。
 - **接管启动** = 先 `mvn` 增量编译，再结束 IDEA 那个进程，然后用**同样的 classpath 和主类**重新拉起，交给插件托管；此后可在面板里停止、重启、看实时日志。
 - **保存** 把当前进程的 classpath / 主类 / JVM 参数存成一套配方。存过之后**不需要 IDEA 里先有进程**：到「已保存」页签里点「启动」即可（会先编译，端口被占会提示你先停 IDEA 那份）。
+- **一键启动** 在「已保存」页签顶部：把所有配方逐个拉起来，不用一个个点。
+  - **已在运行的服务自动跳过**，不会把正在调试的进程踢掉。
+  - **逐个启动、遇错继续**：一个服务失败不影响后面的，最后一起汇报「成功 N / 跳过 N / 失败 N」，每个服务的结局逐条列在进度卡里。
+  - 为什么要串行：同一模块的 Maven 编译是互斥的（都写 `target/`），并发跑会互相覆盖产物；而且一个服务起不来通常意味着环境有问题，先看到那条明确原因比满屏报错有用。
+  - 编译要几分钟，所以**在后台跑**：点完按钮立刻返回，面板每 1 秒轮询进度（`3/8 正在处理 xxx`），期间页面照常可操作。
+  - 模型侧对应 `java_action=start_all`，可用 `java_ids` 只启其中几个。
 - **查询详情**进入日志页：托管进程读插件写的 stdout 文件，IDEA 进程读它自己的 logback 文件（`<工作目录>/logs/<服务名>/info.log`）。
   - 打开时默认只读**最后 200 行**（可点 100 / 200 / 500 / 1000 快速切换，右侧输入框还能自己填 1–5000，回车或失焦生效），之后按字节偏移增量追加，1.5 秒静默刷新且不打断你手动滚动。
   - 支持**自动换行**开关（默认开）、在插件输出多段日志与 info.log / error.log 之间切换。
@@ -311,6 +345,8 @@ apis:
 - `POST /dsh-api-runner/api/java/save` → `{ id | pid }` 保存启动配方
 - `POST /dsh-api-runner/api/java/unsave` → `{ id }`
 - `POST /dsh-api-runner/api/java/start-saved` → `{ id, compile?, port?, debug?, timeout_ms? }` 按配方启动
+- `POST /dsh-api-runner/api/java/start-all` → `{ ids?, compile?, restart?, timeout_ms? }` 一键启动（后台跑，立刻返回 `{ batchId, total }`；`ids` 省略即全部已保存的）
+- `GET /dsh-api-runner/api/java/start-all/status?batch=<batchId>` → 批次进度 `{ finished, done, total, current, items, result }`（`batch` 省略取最近一个）
 - `GET /dsh-api-runner/api/java/log?id=<服务名>&from=<字节偏移>` → 插件启动服务的日志增量
 - `GET /dsh-api-runner/api/java/detail?id=<id 或 pid>&source=&from=&lines=&max_bytes=` → 服务详情 + 日志（含可选日志文件清单；不给 `from` 时按 `lines` 取末尾若干行）
 - `GET /dsh-api-runner/api/settings` → 全局设置（默认工作区、Maven 主路径、数据目录、生效目录）
@@ -355,7 +391,7 @@ node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.
 - 只支持 HTTP/HTTPS 接口，没有 multipart 文件上传。
 - `managed` 服务的进程发现依赖状态文件里的 pid；pid 被系统回收复用后可能误判存活（`isPidAlive` 只做存在性检查）。
 - 日志按字节读，多字节编码（GBK 等）跨读取边界时可能出现半个字符。
-- 侧边栏面板的接口页签负责「配置 + 试调用」，服务页签负责「列表 + 接管/停止/重启 + 实时日志」；`verify`（重启→等日志→调接口一条龙）仍只在对话里让模型调工具完成。
+- 面板的接口页签负责「配置 + 试调用」，服务页签负责「列表 + 接管/停止/重启 + 实时日志」；`verify`（重启→等日志→调接口一条龙）仍只在对话里让模型调工具完成。
 - Java 服务发现依赖 `jps`（取 `JAVA_HOME/bin/jps`，找不到就用 PATH 上的 `jps`），没有 JDK 时列表为空并给出提示；端口来源按平台分流（Windows `netstat -ano -p tcp`，macOS/Linux `lsof -nP -iTCP -sTCP:LISTEN`，没有 lsof 时退回 Linux `netstat -tlnp`），同一 pid 多端口时会逐个做 HTTP 探测挑出真正讲业务协议的端口。
 - Maven 探测顺序：设置里的「Maven 主路径」→ `MAVEN_HOME` → `M2_HOME` → `PATH` → IDEA 自带 Maven（三个平台都会找 IDEA 进程路径）；找不到 `mvn` 时接管启动会跳过编译并给出提示，服务仍按原参数拉起。
 - 接管依赖 `jcmd`（同一个 JDK），且要求原进程是标准启动器起的（有 classpath）。用 `-jar` 或 argfile 启动的进程无法原样还原。
@@ -366,11 +402,19 @@ node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.
 
 ## 常见问题（排查）
 
-**装完侧边栏没有「接口调试」页签？**
-面板依赖 `dsh-better-sidebar`。它没装时 host 侧工具与 HTTP 路由照常工作，只是不出现页签；装上后硬刷新页面（Ctrl/Cmd+Shift+R），通常不用重启 DSH。
+**装完看不到「接口调试」？**
+面板注册到 DSH 自带的三个席位，不需要任何第三方插件。排查顺序：
+
+1. 左栏有没有 ⚡ 图标（`sidebar.panellist`）。有就说明面板挂上了，点它切到中栏整页。
+2. 右侧栏页签需要先展开右侧栏（会话标题栏最右边的按钮）；它只在有会话时出现。
+3. 设置 → 接口调试 是全局项页，和上面两个内容不同，不要拿它判断面板是否挂载。
+4. 都没有就硬刷新页面（Ctrl/Cmd+Shift+R）。插件刚装上/刚升级时，浏览器可能还跑着旧的 client bundle。
 
 **工具列表里没有 `ApiRunner`？**
 先看 profile 的 `package.json` 里有没有 `dsh-api-runner`、`dsh.profile.bundles` 里有没有对应条目、bundle 是否处于启用状态，再确认 DSH 版本在兼容范围内。
+
+**面板是空的 / 看不到接口？**
+面板按「项目」归档。没有会话上下文时用设置里的「默认工作区」当项目目录；那里没填就落到 `default` 桶。先在设置里把默认工作区填成你的项目根目录，或直接在一个会话里打开面板。
 
 **别人装上却报「找不到入口 / build/vN/main.js 不存在」？**
 仓库里的 `cordis.patch.yml` 被 `scripts/stage.mjs` 写成了本机 `file://` 路径。提交前跑 `node scripts/stage.mjs --release` 改回包名，再提交。

@@ -436,6 +436,91 @@ await ok('describe 展示完整地址（含路径）并列出占位符', () => {
     assert.deepEqual(echo.params.sort(), ['fixed', 'id']);
 });
 
+console.log('java 一键启动:');
+await ok('没有保存的服务时给出明确提示', async () => {
+    const result = await service.startAllSavedJava(projectDir, []);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'NOTHING_SAVED');
+});
+
+await ok('一键启动逐个记账：成功/跳过/失败都进 items，不中断', async () => {
+    // 造两个配方：一个能起来（假的 java 命令必然失败），一个 id 不存在。
+    // 这里不真的拉 Java 进程，只验证编排逻辑：失败被记进 items，循环继续。
+    const store = service.projectStore;
+    store.saveJava(projectDir, {
+        id: 'demo-a',
+        name: 'demo-a',
+        mainClass: 'com.example.DemoAApplication',
+        classPath: '/tmp/none/target/classes',
+        javaExe: 'definitely-not-a-real-java-binary',
+        cwd: projectDir,
+    });
+    store.saveJava(projectDir, {
+        id: 'demo-b',
+        name: 'demo-b',
+        mainClass: 'com.example.DemoBApplication',
+        classPath: '/tmp/none/target/classes',
+        javaExe: 'definitely-not-a-real-java-binary',
+        cwd: projectDir,
+    });
+
+    const result = await service.startAllSavedJava(projectDir, ['demo-a', 'ghost']);
+    assert.equal(result.ok, false, '有失败项时整体 ok 为 false');
+    assert.equal(result.code, 'PARTIAL');
+    assert.equal(result.total, 2);
+    // ghost 不存在 → NOT_SAVED；demo-a 拉不起来 → 各自有失败原因
+    const ghost = result.items.find((item) => item.id === 'ghost');
+    assert.equal(ghost.code, 'NOT_SAVED');
+    const a = result.items.find((item) => item.id === 'demo-a');
+    assert.equal(a.ok, false, '假 java 路径不可能启动成功');
+    assert.ok(a.code || a.message, '失败项必须带原因');
+    // 关键：第一个失败没有阻止第二个被处理
+    assert.equal(result.items.length, 2, '失败不应中断整批');
+    assert.match(result.message, /成功 \d+ 个，跳过 \d+ 个，失败 \d+ 个/);
+});
+
+await ok('一键启动跳过已在运行的服务', async () => {
+    // 直接往托管记录里塞一条 alive 的假记录（用当前进程的 pid，保证 isAlive 为 true）
+    service.javaRunner._put(projectDir, {
+        id: 'demo-b',
+        pid: process.pid,
+        mainClass: 'com.example.DemoBApplication',
+        logPath: path.join(homeDir, 'java-logs', 'demo-b.log'),
+        startedAt: new Date().toISOString(),
+    });
+    const result = await service.startAllSavedJava(projectDir, ['demo-b']);
+    const b = result.items.find((item) => item.id === 'demo-b');
+    assert.equal(b.skipped, true, JSON.stringify(b));
+    assert.equal(result.skipped, 1);
+    assert.equal(result.failed, 0);
+});
+
+await ok('后台批次立刻返回 id，轮询能看到进度与结束状态', async () => {
+    const started = service.startSavedJavaBatch(projectDir, ['ghost']);
+    assert.equal(started.ok, true);
+    assert.ok(started.batchId, '必须立刻返回批次 id');
+    assert.equal(started.total, 1);
+
+    // 轮询到结束（失败也算结束）
+    let status;
+    for (let i = 0; i < 50; i += 1) {
+        status = service.startBatchStatus(started.batchId);
+        if (status.finished) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(status.ok, true);
+    assert.equal(status.finished, true, JSON.stringify(status));
+    assert.equal(status.total, 1);
+    assert.ok(status.result, '结束后必须带上 result');
+    assert.equal(status.items.length, 1, '每个服务都要有一条进度记录');
+});
+
+await ok('查不存在的批次给出 NO_BATCH', () => {
+    const status = service.startBatchStatus('batch-does-not-exist');
+    assert.equal(status.ok, false);
+    assert.equal(status.code, 'NO_BATCH');
+});
+
 service.dispose();
 server.close();
 fs.rmSync(tmp, { recursive: true, force: true });

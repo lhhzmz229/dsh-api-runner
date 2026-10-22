@@ -30,6 +30,15 @@ export class ApiRunnerService {
         this.javaRunner = options.javaRunner || new JavaRunner({ homeDir: this.homeDir, settingsStore: this.settingsStore });
         /** 记录最近一次错误，便于排查 */
         this.lastError = '';
+        /**
+         * 一键启动的后台批次：`{ [batchId]: { id, cwd, startedAt, done, total, items, finished, result } }`。
+         *
+         * 为什么放后台跑：一批服务要逐个 mvn 编译，几个服务就是几分钟，
+         * 同步 HTTP 请求会一直挂着（浏览器和 fetch 都可能超时），面板也没法显示进度。
+         * 批次只存内存：DSH 重启后丢批次记录没关系，进程本身已经起来了。
+         */
+        this.startBatches = new Map();
+        this._batchSeq = 0;
     }
 
     /** 面板配置转成 YAML 同构的覆盖层；没有面板存储时返回 undefined */
@@ -513,12 +522,25 @@ export class ApiRunnerService {
         const result = await listJavaProcesses();
         const runs = this.javaRunner ? this.javaRunner.runs(cwd) : [];
         if (!result.ok) {
+            /**
+             * 没有 jps（没装 JDK）时也必须给全字段。
+             *
+             * 面板会直接读 saved / ignored / maven 并 .map 它们；早期这里只返回
+             * processes，前端拿 undefined 就崩（「已保存」页签整个白掉）。
+             * 而且用户没 JDK 时更需要看到「已保存的配方」和「怎么装 JDK」。
+             */
+            const missingProject = this.projectStore ? this.projectStore.project(cwd) : { bindings: [], ignored: [], saved: [] };
             return {
                 ok: false,
                 code: 'JPS_MISSING',
                 message: result.note,
                 processes: runs.map((run) => this._runView(run)),
                 runs: runs.map((run) => this._runView(run)),
+                saved: (missingProject.saved || []).map((item) => this._savedView(item)),
+                bindings: missingProject.bindings || [],
+                ignored: missingProject.ignored || [],
+                maven: await this._mavenHint(),
+                note: result.note,
             };
         }
         const project = this.projectStore ? this.projectStore.project(cwd) : { bindings: [], ignored: [] };
@@ -700,6 +722,202 @@ export class ApiRunnerService {
         const saved = this.projectStore.savedJava(cwd, id);
         if (!saved) return { ok: false, code: 'NOT_SAVED', message: `没有保存的服务 ${id}` };
         return this.javaRunner.startSaved(cwd, saved, options);
+    }
+
+    /**
+     * 一键启动：把「已保存」里的服务批量拉起来。
+     *
+     * 为什么要串行而不是 Promise.all：
+     *   1. Maven 编译在同一个模块上是互斥的（都写 target/），并发跑会互相覆盖，
+     *      出现「编译成功但产物是半成品」这种最难查的错；
+     *   2. 一个服务起不来通常意味着环境有问题（端口、依赖、编译），
+     *      这时候继续把剩下的全拉起来，用户看到的是满屏报错而不是一个明确原因。
+     * 所以默认**逐个启动、遇错继续**：每个失败单独记账，最后一起汇报，
+     * 用户既能看到哪个成功，也能看到哪个为什么失败。
+     *
+     * 已经在跑的跳过（除非 options.restart 为 true），避免把正在调试的进程踢掉。
+     *
+     * @param {string} cwd - 项目目录
+     * @param {string[]} ids - 要启动的服务 id；空数组表示「已保存里的全部」
+     * @param {{compile?:boolean, restart?:boolean, timeoutMs?:number, compileTimeoutMs?:number, onProgress?:Function}} options
+     */
+    async startAllSavedJava(cwd, ids = [], options = {}) {
+        if (!this.projectStore) return { ok: false, code: 'NO_STORE', message: '面板配置存储不可用' };
+        if (!this.javaRunner) return { ok: false, code: 'NO_RUNNER', message: 'Java 托管不可用' };
+
+        const all = this.projectStore.savedJava(cwd) || [];
+        const wanted = Array.isArray(ids) && ids.length > 0
+            ? ids.map((id) => String(id))
+            : all.map((item) => String(item.id));
+        if (wanted.length === 0) {
+            return { ok: false, code: 'NOTHING_SAVED', message: '还没有保存的服务。先在「运行中」里对一个服务点「保存」，之后才能一键启动。' };
+        }
+
+        const aliveIds = new Set((this.javaRunner.runs(cwd) || []).filter((run) => run.alive).map((run) => String(run.id)));
+        const items = [];
+        let started = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        for (const id of wanted) {
+            const saved = all.find((item) => String(item.id) === id);
+            if (!saved) {
+                items.push({ id, ok: false, code: 'NOT_SAVED', message: `没有保存的服务 ${id}` });
+                failed += 1;
+                if (typeof options.onProgress === 'function') {
+                    try {
+                        options.onProgress(items[items.length - 1], items.length, wanted.length);
+                    } catch {
+                        /* 进度回调出错不影响启动 */
+                    }
+                }
+                continue;
+            }
+            if (aliveIds.has(id) && options.restart !== true) {
+                items.push({ id, ok: true, skipped: true, note: `${id} 已在运行，跳过` });
+                skipped += 1;
+                if (typeof options.onProgress === 'function') {
+                    try {
+                        options.onProgress(items[items.length - 1], items.length, wanted.length);
+                    } catch {
+                        /* 进度回调出错不影响启动 */
+                    }
+                }
+                continue;
+            }
+            try {
+                const result = await this.javaRunner.startSaved(cwd, saved, {
+                    compile: options.compile !== false,
+                    timeoutMs: options.timeoutMs,
+                    compileTimeoutMs: options.compileTimeoutMs,
+                });
+                items.push({
+                    id,
+                    ok: result.ok === true,
+                    code: result.code,
+                    pid: result.pid || 0,
+                    port: result.port || 0,
+                    logPath: result.logPath || '',
+                    compile: result.compile,
+                    message: result.message,
+                    note: result.note,
+                });
+                if (result.ok) {
+                    started += 1;
+                    aliveIds.add(id);
+                } else {
+                    failed += 1;
+                }
+            } catch (error) {
+                items.push({ id, ok: false, code: 'UNEXPECTED', message: String(error?.message || error) });
+                failed += 1;
+            }
+            if (typeof options.onProgress === 'function') {
+                try {
+                    options.onProgress(items[items.length - 1], items.length, wanted.length);
+                } catch {
+                    /* 进度回调出错不影响启动 */
+                }
+            }
+        }
+
+        const lines = items.map((item) => {
+            if (item.skipped) return `- ${item.id}：已在运行，跳过`;
+            if (item.ok) return `- ${item.id}：已启动${item.port ? `（端口 ${item.port}）` : ''}`;
+            return `- ${item.id}：失败 —— ${item.message || item.code || '未知原因'}`;
+        });
+        return {
+            ok: failed === 0,
+            code: failed === 0 ? undefined : 'PARTIAL',
+            started,
+            skipped,
+            failed,
+            total: wanted.length,
+            items,
+            message: `一键启动完成：成功 ${started} 个，跳过 ${skipped} 个，失败 ${failed} 个。\n${lines.join('\n')}`,
+        };
+    }
+
+    /**
+     * 在后台跑一次一键启动，立刻返回批次 id。
+     *
+     * 面板拿到 id 后每 1 秒拉一次 `startBatchStatus`，直到 `finished`。
+     * 这样编译期间的几分钟里页面是可交互的，也能看到「3/8 正在编译」这类进度。
+     */
+    startSavedJavaBatch(cwd, ids = [], options = {}) {
+        if (!this.projectStore) return { ok: false, code: 'NO_STORE', message: '面板配置存储不可用' };
+        if (!this.javaRunner) return { ok: false, code: 'NO_RUNNER', message: 'Java 托管不可用' };
+        const all = this.projectStore.savedJava(cwd) || [];
+        const wanted = Array.isArray(ids) && ids.length > 0 ? ids.map((id) => String(id)) : all.map((item) => String(item.id));
+        if (wanted.length === 0) {
+            return { ok: false, code: 'NOTHING_SAVED', message: '还没有保存的服务。先在「运行中」里对一个服务点「保存」，之后才能一键启动。' };
+        }
+
+        this._batchSeq += 1;
+        const batchId = `batch-${Date.now()}-${this._batchSeq}`;
+        const batch = {
+            id: batchId,
+            cwd,
+            startedAt: new Date().toISOString(),
+            done: 0,
+            total: wanted.length,
+            items: [],
+            finished: false,
+            result: null,
+            current: '',
+        };
+        this.startBatches.set(batchId, batch);
+
+        // 只保留最近 10 个批次，避免长时间运行的进程内存里堆一堆历史
+        if (this.startBatches.size > 10) {
+            const oldest = [...this.startBatches.values()].sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+            for (const item of oldest.slice(0, this.startBatches.size - 10)) this.startBatches.delete(item.id);
+        }
+
+        // 不 await：立刻把批次 id 还给面板
+        Promise.resolve()
+            .then(() => this.startAllSavedJava(cwd, wanted, {
+                ...options,
+                onProgress: (item, done, total) => {
+                    batch.done = done;
+                    batch.total = total;
+                    batch.current = item.id;
+                    batch.items.push(item);
+                },
+            }))
+            .then((result) => {
+                batch.result = result;
+                batch.finished = true;
+                batch.done = result.total;
+                batch.current = '';
+            })
+            .catch((error) => {
+                batch.finished = true;
+                batch.current = '';
+                batch.result = { ok: false, code: 'UNEXPECTED', message: String(error?.message || error) };
+            });
+
+        return { ok: true, batchId, total: wanted.length, message: `已开始一键启动 ${wanted.length} 个服务` };
+    }
+
+    /** 读一键启动批次进度；id 省略时返回最近一个批次 */
+    startBatchStatus(batchId = '') {
+        const key = String(batchId || '');
+        const batch = key
+            ? this.startBatches.get(key)
+            : [...this.startBatches.values()].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).pop();
+        if (!batch) return { ok: false, code: 'NO_BATCH', message: '没有这个启动批次（可能已经过期，或 DSH 重启过）' };
+        return {
+            ok: true,
+            batchId: batch.id,
+            finished: batch.finished,
+            done: batch.done,
+            total: batch.total,
+            current: batch.current,
+            startedAt: batch.startedAt,
+            items: batch.items,
+            result: batch.result,
+        };
     }
 
     /** 插件级设置（数据目录 / 默认工作区 / Maven 主路径） */

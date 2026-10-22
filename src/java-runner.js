@@ -267,7 +267,7 @@ export class JavaRunner {
             extraJvmArgs: [`-DdshApiRunner.runId=${id}`],
         });
         this._ensureLogHeader(logPath, `接管 pid ${sourcePid}（${id}）`);
-        const spawned = spawnService({ javaExe: snapshot.javaExe, argv: built.argv, cwd: snapshot.cwd, logPath });
+        const spawned = await spawnService({ javaExe: snapshot.javaExe, argv: built.argv, cwd: snapshot.cwd, logPath });
         if (!spawned.ok) return { ok: false, code: 'SPAWN_FAILED', message: spawned.message, compile };
 
         const record = {
@@ -459,7 +459,7 @@ export class JavaRunner {
 
         // 每次重启开一个新日志段，历史启动记录不被覆盖
         const logPath = this.logPathOf(entry.id);
-        const spawned = spawnService({ javaExe: entry.javaExe, argv: entry.argv, cwd: entry.cwd, logPath });
+        const spawned = await spawnService({ javaExe: entry.javaExe, argv: entry.argv, cwd: entry.cwd, logPath });
         if (!spawned.ok) return { ok: false, code: 'SPAWN_FAILED', message: spawned.message, compile };
 
         const record = { ...entry, pid: spawned.pid, logPath, argv: entry.argv, startedAt: new Date().toISOString(), stoppedAt: '' };
@@ -530,7 +530,7 @@ export class JavaRunner {
         });
         const logPath = this.logPathOf(id);
         this._ensureLogHeader(logPath, `按保存的配置启动 ${id}`);
-        const spawned = spawnService({ javaExe: saved.javaExe, argv: built.argv, cwd: saved.cwd, logPath });
+        const spawned = await spawnService({ javaExe: saved.javaExe, argv: built.argv, cwd: saved.cwd, logPath });
         if (!spawned.ok) return { ok: false, code: 'SPAWN_FAILED', message: spawned.message, compile };
 
         const record = {

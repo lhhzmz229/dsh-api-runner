@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
         const React = require('react');
         const h = React.createElement;
 
+        /** 面板 id：既是左栏全局页在 `main` 里的 key，也是 `sidebar.panellist` 的 id */
         const TAB_ID = 'dsh-api-runner';
         const API = '/dsh-api-runner/api';
         const STYLE_ID = 'dsh-api-runner-style';
@@ -205,6 +206,19 @@ window.__ModuleLoader__.load({
 .ar-empty-icon { font-size: 22px; opacity: .3; line-height: 1; }
 .ar-empty-title { font-size: 13px; font-weight: 600; }
 .ar-empty-hint { font-size: 12px; opacity: .55; line-height: 1.6; max-width: 230px; }
+
+/* ---- 一键启动进度 ---- */
+.ar-batch { display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: var(--ar-r-card);
+  background: var(--ar-surface); }
+.ar-batch-top { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+.ar-batch-bar { height: 4px; border-radius: 2px; background: var(--ar-surface-strong); overflow: hidden; }
+.ar-batch-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--ar-accent);
+  transition: width .25s var(--ar-ease); }
+.ar-batch-line { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+.ar-batch-line > .n { flex: 0 0 auto; font-family: var(--ar-mono); }
+.ar-batch-line.ok > .n { color: var(--ar-success); }
+.ar-batch-line.err > .n { color: var(--ar-danger); }
+.ar-batch-line.skip > .n { color: var(--ar-warn); }
 
 /* ---- 键值行 ---- */
 .ar-kv { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
@@ -552,6 +566,41 @@ window.__ModuleLoader__.load({
         }
 
         /** 已保存的服务：不需要现有进程，按配方直接启动 */
+        /**
+         * 一键启动的进度卡片。
+         *
+         * 编译 + 拉起一批服务要几分钟，期间必须让用户看到「到哪了」，
+         * 否则点完按钮页面没反应，会以为卡死。逐条显示每个服务的结局。
+         */
+        function BatchProgress(props) {
+            const { batch, onDismiss } = props;
+            const total = Number(batch.total) || 0;
+            const done = Number(batch.done) || 0;
+            const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+            const items = Array.isArray(batch.items) ? batch.items : [];
+            return h('div', { className: 'ar-batch' },
+                h('div', { className: 'ar-batch-top' },
+                    h('span', null, batch.finished ? '一键启动完成' : '正在启动服务…'),
+                    h('span', { className: 'ar-spacer' }),
+                    h('span', { className: 'ar-mono ar-muted', style: { fontSize: '11.5px', fontWeight: '400' } }, `${done}/${total}`),
+                    batch.finished ? h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: onDismiss }, '×') : null),
+                h('div', { className: 'ar-batch-bar' }, h('i', { style: { width: `${pct}%` } })),
+                !batch.finished && batch.current
+                    ? h('div', { className: 'ar-hint ar-mono' }, `正在处理 ${batch.current}`)
+                    : null,
+                items.length > 0
+                    ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px' } },
+                        items.map((item) => h('div', {
+                            key: item.id,
+                            className: `ar-batch-line ${item.skipped ? 'skip' : item.ok ? 'ok' : 'err'}`,
+                        },
+                            h('span', { className: 'n' }, item.skipped ? '·' : item.ok ? '✓' : '✗'),
+                            h('span', { className: 'ar-cut', style: { flex: '0 1 auto' } }, item.id),
+                            h('span', { className: 'ar-hint ar-cut', style: { flex: '1 1 auto', minWidth: 0 } },
+                                item.skipped ? '已在运行，跳过' : item.ok ? (item.port ? `已启动 · 端口 ${item.port}` : '已启动') : (item.message || item.code || '失败')))))
+                    : null);
+        }
+
         function SavedRow(props) {
             const { item, busy, onStart, onDelete } = props;
             return h('div', { className: 'ar-item' },
@@ -827,6 +876,8 @@ window.__ModuleLoader__.load({
             const [dataDirDraft, setDataDirDraft] = React.useState('');
             const [workspaceDraft, setWorkspaceDraft] = React.useState('');
             const [mavenHomeDraft, setMavenHomeDraft] = React.useState('');
+            /** 一键启动的后台批次进度（null = 没有正在进行的批次） */
+            const [batch, setBatch] = React.useState(null);
 
             const headers = React.useMemo(() => ({ 'Content-Type': 'application/json', 'x-dsh-session-id': sessionId }), [sessionId]);
             const get = React.useCallback(async (path) => {
@@ -1161,6 +1212,65 @@ window.__ModuleLoader__.load({
                 }
             };
 
+            /**
+             * 一键启动：把「已保存」里还没跑的服务全拉起来。
+             *
+             * 后台跑（host 逐个编译要几分钟），这里只负责起批次 + 轮询进度；
+             * 轮询到 finished 就停，并刷一次服务列表把新进程显示出来。
+             */
+            const startAllSaved = async () => {
+                setBusy('start-all');
+                setError('');
+                setNotice('');
+                try {
+                    const payload = await post('java/start-all', {});
+                    if (!payload.ok) {
+                        setError(payload.message || '一键启动失败');
+                        setBusy('');
+                        return;
+                    }
+                    setBatch({
+                        batchId: payload.batchId,
+                        total: payload.total || 0,
+                        done: 0,
+                        current: '',
+                        items: [],
+                        finished: false,
+                        result: null,
+                    });
+                    setNotice(payload.message || '已开始一键启动');
+                } catch (e) {
+                    setError(e.message);
+                    setBusy('');
+                }
+            };
+
+            // 批次进度轮询：只在有未完成批次时跑，1 秒一次，完成即停并刷新服务列表
+            React.useEffect(() => {
+                if (!batch || batch.finished || !batch.batchId) return undefined;
+                let cancelled = false;
+                const timer = setInterval(async () => {
+                    try {
+                        const data = await request(`java/start-all/status?batch=${encodeURIComponent(batch.batchId)}`, { headers });
+                        if (cancelled) return;
+                        if (!data.ok) return;
+                        setBatch(data);
+                        if (data.finished) {
+                            setBusy('');
+                            await refreshJava();
+                            if (data.result && data.result.ok === false) setError(data.result.message || '部分服务启动失败');
+                            else if (data.result) setNotice(data.result.message || '一键启动完成');
+                        }
+                    } catch {
+                        /* 轮询失败下次再来，不打断用户操作 */
+                    }
+                }, 1000);
+                return () => {
+                    cancelled = true;
+                    clearInterval(timer);
+                };
+            }, [batch && batch.batchId, batch && batch.finished, headers, refreshJava]);
+
             const deleteSaved = async (item) => {
                 if (!window.confirm(`删除已保存的服务 ${item.id}？（只删除启动配方，不影响正在运行的进程）`)) return;
                 setBusy('delete-saved');
@@ -1319,13 +1429,25 @@ window.__ModuleLoader__.load({
                             hint: '在「正在运行」里选一个服务点「保存」，把它那套启动参数（classpath/主类/JVM 参数）记下来。以后不用先在 IDEA 里跑，直接在这里启动。',
                             action: h('button', { className: 'ar-btn tonal', style: { marginTop: '2px' }, onClick: () => setGroup('running') }, '去看正在运行的服务'),
                         })
-                        : h('div', { className: 'ar-group' }, savedList.map((item) => h(SavedRow, {
-                            key: `saved-${item.id}`,
-                            item,
-                            busy,
-                            onStart: startSaved,
-                            onDelete: deleteSaved,
-                        }))))
+                        : h('div', { className: 'ar-group' },
+                            // 一键启动：逐个编译+拉起，已运行的跳过，单个失败不影响其余
+                            h('div', { className: 'ar-row', style: { marginBottom: '2px' } },
+                                h('button', {
+                                    className: 'ar-btn primary',
+                                    disabled: busy !== '',
+                                    title: '把「已保存」里的服务全部拉起来（已在运行的跳过；逐个编译，可能要几分钟）',
+                                    onClick: startAllSaved,
+                                }, busy === 'start-all' ? '启动中…' : '一键启动全部'),
+                                h('span', { className: 'ar-hint', style: { flex: '1 1 auto', minWidth: 0 } },
+                                    `${savedList.length} 个已保存`)),
+                            batch ? h(BatchProgress, { batch, onDismiss: () => setBatch(null) }) : null,
+                            savedList.map((item) => h(SavedRow, {
+                                key: `saved-${item.id}`,
+                                item,
+                                busy,
+                                onStart: startSaved,
+                                onDelete: deleteSaved,
+                            }))))
                     : null,
 
                 group === 'ignored'
@@ -1565,36 +1687,134 @@ window.__ModuleLoader__.load({
 
         // ---------------------------------------------------------------- 注册
         //
-        // inject 只写 betterSidebar：侧边栏页签是本插件的主入口。
-        // 设置页（settings.section）属于可选通道，用 ctx.get('slots') 取——
-        // cordis 的 ctx 是 Proxy，直接读 ctx.slots 在没 inject 时会抛错。
-        const inject = ['betterSidebar'];
+        // 全部注册到 DSH **自带**的 slot 席位，不依赖任何第三方侧边栏插件：
+        //
+        //   sidebar.panellist    左栏图标（id 即 main 的 key）
+        //   main                 中栏整页（keyed，按面板 id 分发）
+        //   sidebar.right.pane.tab / .title
+        //                        右侧栏页签（会话级，与终端/文件/任务并列）
+        //   settings.section     设置页里的插件主页（可选通道）
+        //
+        // 每个席位都用 ctx.slots.inject 包一层：席位由宿主声明，声明还没出现时
+        // 先等着，声明撤掉时自动卸载贡献，之后重新声明再装回来。
+        // 不写死 inject 里的服务名——cordis 的 ctx 是 Proxy，读未 inject 的服务会抛
+        // `cannot get property "slots" without inject`，所以统一用 ctx.get('slots')
+        // 判空，缺席位时安静跳过而不是让整个 client half 不激活。
+        const inject = ['slots'];
+
+        /**
+         * 左栏/中栏面板（全局页）。
+         *
+         * `main` 是 root 级 keyed 席位，本身不带会话绑定，但 root 标准 props 里有
+         * `useSessions`：按「被主视图 retain 的那个会话」取 id（和宿主 DocumentTitle
+         * 同一判据），再把 id 交给 host 解析 cwd。这样在全局页里打开的也是当前会话
+         * 的工作区，而不是永远落到设置里的默认工作区。
+         */
+        function GlobalPanel(props) {
+            const sessionId = typeof props.useSessions === 'function'
+                ? props.useSessions((state) => {
+                    try {
+                        const rows = state && state.byId ? Object.values(state.byId) : [];
+                        const current = rows.find((row) => row && row.retainedBy && (row.retainedBy.mainView ?? 0) > 0);
+                        return current && current.id ? current.id : '';
+                    } catch {
+                        return '';
+                    }
+                })
+                : '';
+            return h(Panel, { visible: true, scope: { sessionId: sessionId || '' } });
+        }
+
+        /**
+         * 右侧栏页签正文（会话级席位）。
+         *
+         * 会话 id 从 standard props 拿，请求头带上它，host 就能解析出该会话的 cwd；
+         * 可见性跟着页签走，页签没被选中时不轮询（省掉后台会话的定时刷新）。
+         */
+        function RightTabPanel(props) {
+            const info = typeof props.useTabInfo === 'function' ? props.useTabInfo() : undefined;
+            return h(Panel, {
+                visible: info ? info.tab.visible !== false : true,
+                scope: { sessionId: props.sessionId || '' },
+            });
+        }
+
+        /**
+         * 面板图标：宿主给 size/active，只画一个 ⚡ 字形，不引宿主 primitives。
+         * 左栏 `sidebar.panellist` 和右侧栏 guide 卡都用它。
+         */
+        function PanelIcon(props) {
+            const size = Number(props.size) || 16;
+            return h('span', {
+                style: {
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: `${size}px`, height: `${size}px`,
+                    fontSize: `${Math.round(size * 0.82)}px`, lineHeight: 1,
+                    opacity: props.active ? 1 : 0.7,
+                },
+                'aria-hidden': 'true',
+            }, '⚡');
+        }
 
         function apply(ctx) {
             installStyles(ctx);
-            if (!ctx.betterSidebar) return;
-            ctx.effect(() => ctx.betterSidebar.registerTab({
-                id: TAB_ID,
-                title: () => '接口调试',
-                description: '配置接口、登录保存 token、调用测试、查看本机 Java 服务',
-                icon: h('span', { style: { fontSize: '13px' } }, '⚡'),
-                order: 42,
-                single: true,
-                component: (props) => h(Panel, { ctx, visible: props.visible, scope: props.scope }),
-            }), 'dsh-api-runner: register tab');
+            const slots = typeof ctx.get === 'function' ? ctx.get('slots') : undefined;
+            if (!slots || typeof slots.register !== 'function') return;
 
-            ctx.effect(() => {
-                const slots = typeof ctx.get === 'function' ? ctx.get('slots') : undefined;
-                if (!slots || typeof slots.register !== 'function') return () => {};
-                const register = () => slots.register({
-                    name: 'settings.section',
-                    id: TAB_ID,
-                    order: 80,
-                    label: () => '接口调试',
-                }, () => h(SettingsPage, {}));
-                const dispose = typeof slots.inject === 'function' ? slots.inject('settings.section', register) : register();
+            const wait = (name, register) => {
+                if (typeof slots.inject !== 'function') return register();
+                const dispose = slots.inject(name, register);
                 return typeof dispose === 'function' ? dispose : () => {};
-            }, 'dsh-api-runner: settings section');
+            };
+
+            // 左栏图标 + 中栏整页：一对，id 必须一致，点图标才切得过去
+            ctx.effect(() => wait('sidebar.panellist', () => slots.register({
+                name: 'sidebar.panellist',
+                id: TAB_ID,
+                order: 42,
+                label: () => '接口调试',
+            }, PanelIcon)), 'dsh-api-runner: panellist');
+
+            ctx.effect(() => wait('main', () => slots.register({
+                name: 'main',
+                key: TAB_ID,
+            }, GlobalPanel)), 'dsh-api-runner: main panel');
+
+            // 右侧栏页签：定义注册进 sidebarRightTabs，正文和标题按同一个 id 落到两个 keyed 席位
+            ctx.effect(() => {
+                const tabs = typeof ctx.get === 'function' ? ctx.get('sidebarRightTabs') : undefined;
+                if (!tabs || typeof tabs.register !== 'function') return () => {};
+                return tabs.register({
+                    id: TAB_ID,
+                    kind: TAB_ID,
+                    title: () => '接口调试',
+                    guide: [{
+                        id: TAB_ID,
+                        order: 42,
+                        title: () => '接口调试',
+                        description: () => '配置接口、登录保存 token、调用测试、查看本机 Java 服务',
+                        icon: PanelIcon,
+                    }],
+                }) ?? (() => {});
+            }, 'dsh-api-runner: right tab type');
+
+            ctx.effect(() => wait('sidebar.right.pane.tab', () => slots.register({
+                name: 'sidebar.right.pane.tab',
+                key: TAB_ID,
+            }, RightTabPanel)), 'dsh-api-runner: right tab body');
+
+            ctx.effect(() => wait('sidebar.right.pane.tab.title', () => slots.register({
+                name: 'sidebar.right.pane.tab.title',
+                key: TAB_ID,
+            }, () => h('span', { style: { fontSize: '12.5px' } }, '接口调试'))), 'dsh-api-runner: right tab title');
+
+            // 设置页里的插件主页：全局项（默认工作区、数据目录、Maven 主路径）
+            ctx.effect(() => wait('settings.section', () => slots.register({
+                name: 'settings.section',
+                id: TAB_ID,
+                order: 80,
+                label: () => '接口调试',
+            }, () => h(SettingsPage, {}))), 'dsh-api-runner: settings section');
         }
 
         exports.inject = inject;
