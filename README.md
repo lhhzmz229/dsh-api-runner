@@ -4,6 +4,15 @@
 [![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![dsh-plugin](https://img.shields.io/badge/dsh-plugin-8b5cf6.svg)](https://github.com/topics/dsh-plugin)
 
+<!-- 被 dsh-plugin.org 收录后，把下面这行取消注释（slug 用详情页地址里的 owner/slug）：
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/lhhzmz229/dsh-api-runner)
+-->
+
+<!-- 截图占位：拍好后把图片放到 docs/ 下，再取消注释
+![侧边栏「接口调试」面板](./docs/screenshot-panel.png)
+![服务接管与实时日志](./docs/screenshot-service.png)
+-->
+
 DSH 插件：把「后端接口清单」「本地服务启停」「日志增量读取」三件事交给模型直接调用，并提供一个侧边栏面板做人工配置，形成「改完自己验」的闭环。
 
 - **侧边栏面板「接口调试」**：可视化增删改接口配置、登录并保存 token、点按钮试调用、列出本机所有运行中的 Java 服务并一键设为 baseUrl。
@@ -12,19 +21,30 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 - **服务重启**：`managed` 模式由插件托管进程（能 start/stop/restart，DSH 重启后服务仍在跑）；`observe` 模式进程由 IDEA 启动，插件只轮询健康检查（配合 IDEA 的 restart 按钮）。
 - **日志读取**：按文件 + 字节偏移增量 tail，支持正则过滤、等待特征出现，游标持久化，服务重启不丢。
 
+> **能力分类**：开发与运维 ｜ **平台**：Windows / macOS / Linux ｜ **许可证**：MIT
+> **一句话价值**：装上后模型能在对话里自己调接口、启停本地服务、读日志，改完代码自己验证。
+
 ## 安装
 
 装好之后，模型可以在对话里直接列接口、调接口、启停/重启本地服务、按字节偏移增量读日志，
 形成「改完自己验」的闭环，不用再手工复制 curl、切窗口重启服务、翻日志找报错。
 
-### 从 GitHub 源码安装（推荐）
+### 从 npm 安装（推荐）
+
+```bash
+dsh plugin --profile web add dsh-api-runner
+```
+
+npm 上还没发这个版本时，先用下面的源码方式装；发布之后这条就是最短路径，也是 DSH「插件中心」里一键安装的形式。
+
+### 从 GitHub 源码安装
 
 ```bash
 dsh plugin --profile web add github:lhhzmz229/dsh-api-runner
 ```
 
 DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
-`dsh-api-runner@github:lhhzmz229/dsh-api-runner` 也等价。装完重启 DSH（或把 `dsh-api-runner` bundle 关掉再打开）生效。
+`dsh-api-runner@github:lhhzmz229/dsh-api-runner` 也等价。这条依赖本机有 `git`；装完重启 DSH（或把 `dsh-api-runner` bundle 关掉再打开）生效。
 
 ### 本地开发：link 安装
 
@@ -67,7 +87,8 @@ host 侧的工具（`ApiRunner`）与 HTTP 路由照常工作，只是不出现�
 
 ## 兼容与运行要求
 
-- **DSH**：`>=0.1.0-rc.6 <0.2.0-0 || 0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0`
+- **DSH**：`>=0.1.0-rc.6 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`
+- **已验证环境**：DSH 0.2.1-rc.2 / Windows
 - **Node.js**：`>=20`
 - **平台**：Windows / macOS / Linux（进程与端口发现按平台分流）
 - **可选依赖**：`dsh-better-sidebar`（提供侧边栏「接口调试」页签，不装则只有模型侧工具与 HTTP 路由）
@@ -335,6 +356,29 @@ node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.
 - 面板保存的 token 是明文落在 `<数据目录>/api-runner-ui.json`（只在 UI 与工具输出里脱敏），本机共用的场景请自行注意。
 - 按配方启动要求配方里有完整的 classpath（所以得先「保存」过一次）；`.cmd`/`.bat` 的 Maven 用 `cmd.exe` 调用，路径含空格已处理。
 - 日志首屏按行读末尾，历史大文件（几百 MB）会被截断到所选行数；要看更早的内容请切换日志文件或加大行数。
+
+## 常见问题（排查）
+
+**装完侧边栏没有「接口调试」页签？**
+面板依赖 `dsh-better-sidebar`。它没装时 host 侧工具与 HTTP 路由照常工作，只是不出现页签；装上后硬刷新页面（Ctrl/Cmd+Shift+R），通常不用重启 DSH。
+
+**工具列表里没有 `ApiRunner`？**
+先看 profile 的 `package.json` 里有没有 `dsh-api-runner`、`dsh.profile.bundles` 里有没有对应条目、bundle 是否处于启用状态，再确认 DSH 版本在兼容范围内。
+
+**别人装上却报「找不到入口 / build/vN/main.js 不存在」？**
+仓库里的 `cordis.patch.yml` 被 `scripts/stage.mjs` 写成了本机 `file://` 路径。提交前跑 `node scripts/stage.mjs --release` 改回包名，再提交。
+
+**`ApiRunner { action: 'java', java_action: 'list' }` 返回空列表？**
+服务发现依赖 `jps`（优先 `JAVA_HOME/bin/jps`，其次 PATH）。没有 JDK 时列表为空并给出提示；有 JDK 仍为空，检查目标服务是否用标准启动器起的。
+
+**接管启动失败 / 端口一直没起来？**
+接管要求 `jcmd` 能读到完整 classpath，`-jar` 或 argfile 启动的进程无法原样还原；原端口被 IDEA 那份占着会先提示你先停掉；找不到 `mvn` 时跳过编译、仍按原参数拉起。端口写在配置中心时，插件会在进程起来后持续扫描真实监听端口并回填。
+
+**日志读不到，或者出现半个字符？**
+`logPath` 与 `cwd` 的相对路径按项目工作目录展开（没有工作区时按配置文件所在目录）。日志按字节读，GBK 等多字节编码跨读取边界时可能出现半个字符，换 UTF-8 日志或调大 `max_bytes`。
+
+**接口一直 401？**
+多半是面板里保存的 token 过期了。点「清除 token」后重新「登录并保存」；或检查登录接口的 `tokenPath`、注入头与前缀是否和实际响应一致。
 
 ## 许可证
 

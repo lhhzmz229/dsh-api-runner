@@ -33,7 +33,13 @@
   },
   "engines": {
     "node": ">=20",
-    "dsh": ">=0.1.0-rc.6 <0.2.0-0 || 0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0"
+    "dsh": ">=0.1.0-rc.6 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/plugin.mjs",
+    "test:all": "node test/smoke.mjs && node test/plugin.mjs && node test/client.mjs && node test/managed.mjs && node test/java.mjs",
+    "stage": "node scripts/stage.mjs",
+    "release": "node scripts/stage.mjs --release"
   },
   "dependencies": {
     "yaml": "^2.8.0"
