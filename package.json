@@ -67,6 +67,7 @@
     "cordis.patch.yml",
     "src",
     "client",
+    "docs",
     "scripts",
     "test",
     "README.md",

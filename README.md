@@ -8,11 +8,6 @@
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/lhhzmz229/dsh-api-runner)
 -->
 
-<!-- 截图占位：拍好后把图片放到 docs/ 下，再取消注释
-![侧边栏「接口调试」面板](./docs/screenshot-panel.png)
-![服务接管与实时日志](./docs/screenshot-service.png)
--->
-
 DSH 插件：把「后端接口清单」「本地服务启停」「日志增量读取」三件事交给模型直接调用，并提供一个侧边栏面板做人工配置，形成「改完自己验」的闭环。
 
 - **侧边栏面板「接口调试」**：可视化增删改接口配置、登录并保存 token、点按钮试调用、列出本机所有运行中的 Java 服务并一键设为 baseUrl。
@@ -23,6 +18,18 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 
 > **能力分类**：开发与运维 ｜ **平台**：Windows / macOS / Linux ｜ **许可证**：MIT
 > **一句话价值**：装上后模型能在对话里自己调接口、启停本地服务、读日志，改完代码自己验证。
+
+## 效果
+
+侧边栏「接口调试」的服务页：插件托管的 Java 服务按「已接管 / 运行中 / 已保存 / 已忽略」分组，业务 HTTP 端口与 Sentinel 之类的私有协议端口分开标注，每行可直接查询详情、重启、停止、保存启动配方。
+
+![服务页：已接管的 Java 服务](./docs/screenshot-service.png)
+
+「接口调试」的设置页：数据目录、默认工作区、Maven 主路径、接口基地址。
+
+![设置页：数据目录与 Maven 主路径](./docs/screenshot-settings.png)
+
+> 截图中的服务名、包名与本机路径做了模糊处理。验证环境：DSH `V0.2.1-alpha.1` / Windows（[版本截图](./docs/verified-dsh-version.png)）。
 
 ## 安装
 
@@ -88,7 +95,7 @@ host 侧的工具（`ApiRunner`）与 HTTP 路由照常工作，只是不出现�
 ## 兼容与运行要求
 
 - **DSH**：`>=0.1.0-rc.6 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`
-- **已验证环境**：DSH 0.2.1-rc.2 / Windows
+- **已验证环境**：DSH `0.2.1-alpha.1` / Windows
 - **Node.js**：`>=20`
 - **平台**：Windows / macOS / Linux（进程与端口发现按平台分流）
 - **可选依赖**：`dsh-better-sidebar`（提供侧边栏「接口调试」页签，不装则只有模型侧工具与 HTTP 路由）
