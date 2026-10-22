@@ -1,0 +1,92 @@
+# dsh-api-runner 配置示例
+# 位置：${DSH_HOME}/api-runner.yml（全局），或 <项目>/.dsh/api-runner.yml（项目级，覆盖全局）
+# 改完保存即生效，不需要重启 DSH。
+#
+# 引用环境变量：${SOME_ENV}（在 url/headers/command 里都可以用）
+# 调用期占位符：{name}（模型调接口时通过 params 传入，会替换 URL 与 body 里的同名占位）
+
+defaults:
+  timeoutMs: 30000
+
+env:
+  # 可以在这里定义命名常量，例如：
+  # API_HOST: http://127.0.0.1:8080
+  # TOKEN: ${DEV_TOKEN}
+
+apis:
+  # 最小配置
+  - id: health
+    name: 健康检查
+    method: GET
+    url: http://127.0.0.1:8080/actuator/health
+
+  # 路径占位 + query 参数
+  - id: get-user
+    name: 查询用户
+    method: GET
+    url: http://127.0.0.1:8080/api/users/{id}
+    headers:
+      Authorization: "Bearer ${DEV_TOKEN}"
+    query:
+      verbose: "true"
+
+  # POST JSON：body 里的 {name} 由模型传参替换
+  - id: create-order
+    name: 创建订单
+    method: POST
+    url: http://127.0.0.1:8080/api/orders
+    headers:
+      Content-Type: application/json
+      Authorization: "Bearer ${DEV_TOKEN}"
+    body:
+      userId: "{userId}"
+      amount: "{amount}"
+      remark: "{remark}"
+
+  # POST 表单
+  - id: login
+    name: 登录
+    method: POST
+    url: http://127.0.0.1:8080/api/login
+    headers:
+      Content-Type: application/x-www-form-urlencoded
+    body:
+      username: "{username}"
+      password: "{password}"
+
+services:
+  # managed：插件托管进程（启动/停止/重启都由插件做，DSH 重启后服务仍在跑）
+  - id: app
+    name: 本地后端
+    mode: managed
+    cwd: ./            # 相对配置文件所在目录解析
+    # Windows 下 .cmd/.bat 会自动用 shell 启动
+    command: ./mvnw.cmd
+    args: ["spring-boot:run"]
+    env:
+      SPRING_PROFILES_ACTIVE: dev
+    logPath: ./logs/app.log        # 子进程 stdout/stderr 追加到这里
+    startupTimeoutMs: 90000        # 等健康检查通过的最长时间
+    stopTimeoutMs: 15000
+    health:
+      url: http://127.0.0.1:8080/actuator/health
+      expectStatus: 200
+      intervalMs: 1000
+      timeoutMs: 2000
+
+  # observe：进程由 IDEA 启动（用 IDEA 的 restart 按钮），插件只观测
+  - id: idea-app
+    name: IDEA 里跑的 Spring Boot
+    mode: observe
+    health:
+      url: http://127.0.0.1:8080/actuator/health
+      expectStatus: 200
+      ports: [8080]
+
+logs:
+  - id: app-log
+    name: 后端日志
+    path: ./logs/app.log
+  - id: idea-console
+    name: IDEA 控制台重定向文件（若你在 Run Configuration 里配了）
+    path: ./logs/idea-console.log

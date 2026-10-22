@@ -1,0 +1,70 @@
+{
+  "name": "dsh-api-runner",
+  "version": "0.1.0",
+  "description": "DSH 插件：按配置调用后端 HTTP 接口、启停/重启本地开发服务、增量读取日志并等待日志特征，让模型能\"改完自己验\"。",
+  "type": "module",
+  "license": "MIT",
+  "author": "Moz (lhhzmz229)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lhhzmz229/dsh-api-runner.git"
+  },
+  "homepage": "https://github.com/lhhzmz229/dsh-api-runner#readme",
+  "bugs": {
+    "url": "https://github.com/lhhzmz229/dsh-api-runner/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "api-runner",
+    "http-client",
+    "log-tail",
+    "spring-boot",
+    "java",
+    "devtools"
+  ],
+  "main": "src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./runner": "./src/main.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.1.0-rc.6 <0.2.0-0 || 0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0"
+  },
+  "dependencies": {
+    "yaml": "^2.8.0"
+  },
+  "peerDependencies": {
+    "dsh-better-sidebar": ">=0.12.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "dsh-better-sidebar"
+      ]
+    }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "src",
+    "client",
+    "scripts",
+    "test",
+    "README.md",
+    "LICENSE",
+    "dsh-api-runner.example.yml"
+  ]
+}

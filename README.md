@@ -1,0 +1,349 @@
+# dsh-api-runner
+
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+[![dsh-plugin](https://img.shields.io/badge/dsh-plugin-8b5cf6.svg)](https://github.com/topics/dsh-plugin)
+
+DSH 插件：把「后端接口清单」「本地服务启停」「日志增量读取」三件事交给模型直接调用，并提供一个侧边栏面板做人工配置，形成「改完自己验」的闭环。
+
+- **侧边栏面板「接口调试」**：可视化增删改接口配置、登录并保存 token、点按钮试调用、列出本机所有运行中的 Java 服务并一键设为 baseUrl。
+- **可配置接口**：在 YAML 里声明接口，或在面板里点选添加（方法、URL、请求头、body 模板），模型按 id 调用，占位符自动替换。
+- **登录态**：把某个接口标记为登录接口，调用成功后按 `tokenPath` 取出 token 存进项目档，后续接口自动注入 `Authorization`，不用手工复制。
+- **服务重启**：`managed` 模式由插件托管进程（能 start/stop/restart，DSH 重启后服务仍在跑）；`observe` 模式进程由 IDEA 启动，插件只轮询健康检查（配合 IDEA 的 restart 按钮）。
+- **日志读取**：按文件 + 字节偏移增量 tail，支持正则过滤、等待特征出现，游标持久化，服务重启不丢。
+
+## 安装
+
+装好之后，模型可以在对话里直接列接口、调接口、启停/重启本地服务、按字节偏移增量读日志，
+形成「改完自己验」的闭环，不用再手工复制 curl、切窗口重启服务、翻日志找报错。
+
+### 从 GitHub 源码安装（推荐）
+
+```bash
+dsh plugin --profile web add github:lhhzmz229/dsh-api-runner
+```
+
+DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
+`dsh-api-runner@github:lhhzmz229/dsh-api-runner` 也等价。装完重启 DSH（或把 `dsh-api-runner` bundle 关掉再打开）生效。
+
+### 从 NPM 安装
+
+```bash
+dsh plugin --profile web add dsh-api-runner
+```
+
+（NPM 包发布后可用；这也是插件能出现在 DSH「插件中心」里的前提。）
+
+### 本地开发：link 安装
+
+```bash
+# 在插件目录下装依赖（只有一个运行时依赖 yaml；npm cache 目录无写权限时用 --cache 指到可写目录）
+npm install
+
+# 以 link 方式装进 desktop profile
+dsh plugin --profile desktop add "link:/绝对路径/到/dsh-api-runner"
+```
+
+Windows 下 link 路径写成 `link:D:/path/to/dsh-api-runner` 也等价。
+
+`dsh` 命令不在 PATH 时，用桌面版自带运行时（路径按你的安装位置调整）：
+
+```bash
+# Windows
+"<DSH 安装目录>/resources/runtime/bin/node.cmd" "<DSH 安装目录>/resources/app.asar/dsh/bin/dsh.js" plugin --profile desktop add "link:..."
+# macOS / Linux
+"<DSH 安装目录>/resources/runtime/bin/node" "<DSH 安装目录>/resources/app.asar/dsh/bin/dsh.js" plugin --profile desktop add "link:..."
+```
+
+装好后 profile 的 `package.json` 会出现依赖 `dsh-api-runner` 与 `dsh.profile.bundles` 里的 `dsh-api-runner` 条目；
+插件自己的 `cordis.patch.yml` 负责把 entry 插进依赖树。
+
+侧边栏页签依赖 **`dsh-better-sidebar`** 插件（`dsh.client.inject` 里声明了它）。没装这个插件时，
+host 侧的工具（`ApiRunner`）与 HTTP 路由照常工作，只是不出现「接口调试」页签。
+
+## 权限与风险
+
+安装前请确认这些行为都在你的预期内：
+
+| 项目 | 说明 |
+| --- | --- |
+| 执行本地命令 | 用 `jps` / `jcmd` / `mvn` / `netstat` / `lsof` 发现、接管、启停 Java 进程；`managed` 模式会按配置直接拉起与结束子进程 |
+| 发起 HTTP 请求 | 只请求你在 YAML 或面板里配置的 URL，可按配置注入 `Authorization` 头 |
+| 读取本地文件 | 读取你配置的日志文件（按字节偏移增量读），内容只回给模型，不上传 |
+| 写入本地文件 | `<数据目录>/` 下的状态与 UI 配置；面板保存的 token 明文落在 `api-runner-ui.json`（见「已知限制」） |
+| 外联上报 | 无遥测、无统计上报，插件自身不发起任何外部请求 |
+
+## 兼容与运行要求
+
+- **DSH**：`>=0.1.0-rc.6 <0.2.0-0 || 0.1.7-rc.2 || >=0.2.0-rc.1 <0.3.0-0`
+- **Node.js**：`>=20`
+- **平台**：Windows / macOS / Linux（进程与端口发现按平台分流）
+- **可选依赖**：`dsh-better-sidebar`（提供侧边栏「接口调试」页签，不装则只有模型侧工具与 HTTP 路由）
+- **可选环境**：JDK（`jps` / `jcmd`，用于 Java 服务发现与接管）、Maven（`mvn`，用于接管时编译）
+
+## 配置
+
+配置文件按「内置默认 → 全局 → 项目」合并，后者覆盖前者：
+
+| 位置 | 说明 |
+| --- | --- |
+| `${DSH_HOME}/api-runner.yml` | 全局，所有项目生效 |
+| `<项目 cwd>/.dsh/api-runner.yml` | 项目级，建议放这个 |
+
+文件名也支持 `api-runner.yaml` / `dsh-api-runner.yml`。**改完保存即生效**（按 mtime + size 缓存），不用重启 DSH。
+
+完整示例见 [dsh-api-runner.example.yml](./dsh-api-runner.example.yml)，最小可用示例：
+
+```yaml
+defaults:
+  timeoutMs: 30000
+  headers:
+    Content-Type: application/json
+
+env:
+  TOKEN: ${DEV_TOKEN}          # 引用环境变量
+
+apis:
+  - id: get-user
+    name: 查询用户
+    method: GET
+    url: http://127.0.0.1:8080/api/users/{id}
+    headers:
+      Authorization: "Bearer ${TOKEN}"
+
+  - id: create-order
+    method: POST
+    url: http://127.0.0.1:8080/api/orders
+    body:
+      userId: "{userId}"
+      amount: "{amount}"
+
+services:
+  # 插件托管：mvnw spring-boot:run
+  - id: app
+    mode: managed
+    cwd: ../
+    command: ./mvnw.cmd
+    args: ["spring-boot:run"]
+    logPath: ./logs/app.log
+    startupTimeoutMs: 90000
+    health:
+      url: http://127.0.0.1:8080/actuator/health
+
+  # IDEA 里跑，插件只观测（配合 IDEA restart 按钮）
+  - id: idea-app
+    mode: observe
+    health:
+      url: http://127.0.0.1:8080/actuator/health
+      ports: [8080]
+
+logs:
+  - id: app-log
+    path: ./logs/app.log
+```
+
+### 两种占位符
+
+| 写法 | 何时展开 | 用途 |
+| --- | --- | --- |
+| `${NAME}` | 加载配置时 | 环境变量 / `env:` 段里定义的值，用于 URL、header、command |
+| `{name}` | 调用接口时 | 模型通过 `params` 传入，替换 URL 与 body 里的同名占位 |
+
+`headers` 里的 `${VAR}` 会展开成真实值，但在返回给模型的 `request.headers` 里按名字脱敏（`token`/`secret`/`password`/`key`/`auth` 等一律 `demo***3456`）。
+
+## 工具与动作
+
+模型通过 `ApiRunner` 工具调用，`action` 取值：
+
+| action | 作用 |
+| --- | --- |
+| `describe` | 列出可用接口、服务、日志（含每个接口需要的参数名），不返回 header 值 |
+| `call` | 按 `api_id` 调接口，`params` 传占位符；已保存 token 会自动注入 |
+| `login` | 调登录接口并把 token 存进项目档（`api_id` 指向配了 `login.tokenPath` 的接口） |
+| `java` | 本机 Java 服务：`java_action` = `list` / `detail`（详情+日志）/ `start`（接管启动）/ `stop` / `restart` / `log` / `ignore` / `unignore` / `save`（保存启动配方）/ `unsave` / `start_saved`（按配方启动，不需要 IDEA 里先有进程）/ `settings`（读或改全局设置）/ `status`，详见下文 |
+| `service` | `service_action` = `start` / `stop` / `restart` / `wait` / `status` |
+| `log` | 增量读日志（`pattern` 正则过滤，`max_bytes` / `max_lines` 限流） |
+| `wait_log` | 等某个特征出现在日志里（`timeout_ms` 超时） |
+| `reset_log` | 把游标重置到文件末尾 |
+| `verify` | 一条命令串起「重启 → 等日志特征 → 调接口」，返回分步结果 |
+
+`verify` 只有在所有步骤都成功（observe 模式下无法自动重启除外）才返回 `ok: true`；失败时给出 `code`（如 `STEP_FAILED:log`）与可读 `message`。
+
+## 典型流程
+
+```mermaid
+flowchart LR
+    M["模型 / DSH 对话"] -->|"ApiRunner.call"| API["后端接口<br/>YAML 里配置的 URL"]
+    M -->|"ApiRunner.service start/stop/restart"| SVC["本地服务进程<br/>managed 托管 / observe 观测"]
+    M -->|"ApiRunner.log / wait_log"| LOG["日志文件<br/>按字节偏移增量读"]
+    M -->|"ApiRunner.verify"| V["重启 → 等日志特征 → 调接口"]
+    SVC -->|"stdout / stderr 追加"| LOG
+    UI["侧边栏「接口调试」"] -->|"增删改接口 · 登录存 token · 试调用"| API
+    UI -->|"列出本机 Java 服务 · 接管 · 重启 · 看日志"| SVC
+```
+
+典型的一轮「改完自己验」：改代码 → `service restart` → `wait_log` 等 `Started Application` →
+`call` 打接口看返回 → 不对就 `log` 拉最近几百字节定位报错。也可以直接用 `verify` 一条串起来。
+
+## 侧边栏面板
+
+插件在右侧栏注册了一个「接口调试」标签页（`betterSidebar.registerTab`，单个实例）。右侧栏很窄，所以内容分成三个页签，顶部固定、下方独立滚动，一次只看一块：
+
+**接口页签**
+- 顶部是**按项目分类**的二级页签（只有存在第二个项目时出现）：第一个永远是当前工作区，后面是其它已知项目（显示成末段目录名，重名时带上上一级；页签多了横向滚动）。二级页签没有灰底容器、选中项是品牌色实心块，和顶部那排灰底分段控件一眼能分开。
+- 项目清单来自「当前会话的工作区 + 设置里的默认工作区 + 面板里存过的所有项目」，所以还没配过接口的项目也会出现——不然切不过去。
+- 切到别的项目后，接口列表、基地址、token、保存/编辑/删除**都作用于那个项目自己的档**（请求带 `project`，后端按项目桶读写），不会污染当前工作区。要回到自己项目点第一个页签。
+- 当前项目下：顶部筛选框可按 id / 名称 / 地址过滤；右侧「新增」展开内联编辑表单。
+- 每条接口显示方法徽章、名称、地址（host 弱化、路径强化）、来源徽章（`YAML` = 来自配置文件，无徽章 = 面板新建）、占位参数列表。
+- 行内操作：「测试」（用示例参数调用一次）、「登录并保存」（仅登录接口）、复制地址、清除 token、编辑、删除（只允许删面板自己建的）。
+- 调用结果是一张卡片：状态码、耗时、响应大小，可在「响应 / 响应头 / 请求」之间切换，带复制与关闭。
+- **编辑表单**：id / 名称 / 方法 / URL / baseUrl / 说明 / 请求头（JSON）/ body（JSON）/ 示例参数（JSON）/ 用哪个 token；勾「是登录接口」后展开 tokenPath（如 `data.token`）、注入头（默认 `Authorization`）、前缀（默认 `Bearer `）。
+
+**服务页签**
+- 每 5 秒刷新。服务页顶部还有一排**二级页签**（**已接管** / **运行中** / **已保存** / **已忽略**）。这一排样式和顶部「接口 / 服务 / 设置」不同：没有灰底容器，选中项是品牌色实心块，用来区分"页面级"和"分组级"两层导航。一次只看一组，不再纵向堆四块。
+- 如果「已接管」是空的、而确实有服务在跑，进入服务页时会自动落到「运行中」，不用多点一次。
+- 每行显示 pid、主类、端口、归属标记、debug 端口、`spring.profiles.active`。
+- **端口带角色标注**：一个服务常常监听两个端口——业务 HTTP 端口（如 8080）和 **Sentinel 规则端口**（如 8719，回 `400 Invalid command`，不能当接口地址）。插件会逐个探测，把真正讲 HTTP 的标成 `HTTP` 并用作 baseUrl，Sentinel 端口灰显标注。
+- 接管/重启时如果进程参数里读不到 `server.port`（端口常写在配置中心或外部配置文件里），插件会在进程起来后持续扫描真实监听端口并**回填到托管记录**，所以「已接管」里的端口与 `HTTP` 标注不会因为「参数里没端口」而空着。
+- **接管启动** = 先 `mvn` 增量编译，再结束 IDEA 那个进程，然后用**同样的 classpath 和主类**重新拉起，交给插件托管；此后可在面板里停止、重启、看实时日志。
+- **保存** 把当前进程的 classpath / 主类 / JVM 参数存成一套配方。存过之后**不需要 IDEA 里先有进程**：到「已保存」页签里点「启动」即可（会先编译，端口被占会提示你先停 IDEA 那份）。
+- **查询详情**进入日志页：托管进程读插件写的 stdout 文件，IDEA 进程读它自己的 logback 文件（`<工作目录>/logs/<服务名>/info.log`）。
+  - 打开时默认只读**最后 200 行**（可点 100 / 200 / 500 / 1000 快速切换，右侧输入框还能自己填 1–5000，回车或失焦生效），之后按字节偏移增量追加，1.5 秒静默刷新且不打断你手动滚动。
+  - 支持**自动换行**开关（默认开）、在插件输出多段日志与 info.log / error.log 之间切换。
+  - **每次启动写一个独立日志文件**（`java-logs/<服务名>/<时间戳>.log`），重启多次不会混在同一个文件里，历史段可以单独翻。
+- 「忽略」只是把这个服务从「运行中」里收起来，**不影响进程本身**，可在「已忽略」页签里点「取消忽略」恢复；已忽略的行只保留「取消忽略」一个动作，避免误点接管。
+- 「用作 baseUrl」把项目接口基地址设为 `http://127.0.0.1:<HTTP 端口>`。
+
+**设置页签**
+- 接口基地址（接口自己没填 baseUrl 时用它）、已保存 token 列表（脱敏值 + 清除）、配置来源（项目路径、项目 key、命中的 YAML 文件）。
+
+**DSH 设置里的插件主页**：设置 → 「接口调试」页（`settings.section`，order 80），放跨项目的全局项——**默认工作区**（没有会话上下文时用它当项目目录）、**Maven 主路径**（接管启动前编译用；留空自动探测 MAVEN_HOME → PATH → IDEA 自带，并读取项目 `.idea` 里的 settings.xml 与本地仓库）与**数据目录**（必须是绝对路径，改完后新日志立刻写过去；留空即回到 `DSH_HOME`）。
+
+**数据位置**：面板数据存在 `${DSH_HOME}/api-runner-ui.json`（按项目 key 分开），YAML 里的接口与面板接口**按 id 合并**：面板改的同名 id 覆盖 YAML 的值，面板新增的与 YAML 的并存。
+
+### 登录接口怎么写
+
+```yaml
+apis:
+  - id: login
+    method: POST
+    url: /api/login
+    baseUrl: http://127.0.0.1:8080
+    body:
+      username: "{username}"
+      password: "{password}"
+    login:
+      tokenPath: data.token      # 从响应 JSON 取 token 的路径，支持 a.b[0].c
+      header: Authorization      # 存下来后注入到哪个头
+      prefix: "Bearer "          # 加在 token 前面
+
+  - id: me
+    method: GET
+    url: /api/me                 # 自动带上 Authorization: Bearer xxx
+    baseUrl: http://127.0.0.1:8080
+```
+
+然后 `ApiRunner { action: 'login', api_id: 'login', params: { username: 'alice', password: 'p@ss' } }`；
+之后调 `me` 就会带 token，也可以在 `call` 里用 `token_from` 临时指定用哪个登录态。
+
+`tokenPath` 没写对时不会白跑一趟：登录成功后会在响应里找像 token 的字段，
+只有一个候选就自动用它并保存，同时告诉你该把它改成什么；
+有多个候选则列出来让你选。面板里配置的接口会自动把这个路径写回配置，下次不再提示。
+
+### 关于 IDEA 里的服务
+
+**推荐做法：接管。** IDEA 起的服务，插件在服务页签里点「接管启动」（或调 `ApiRunner { action: 'java', java_action: 'start', pid }`），流程是：
+1. 从 `jcmd` 读出该进程的 java 路径、工作目录、完整 classpath、主类、JVM 参数；
+2. 用 `mvn -pl <模块> -am compile -DskipTests` 增量编译（模块与 reactor 根从 classpath 里的 `target/classes` 反推；Maven 依次找设置页里配的「Maven 主路径」→ `MAVEN_HOME`/`M2_HOME` → PATH → IDEA 自带）。编译参数会自动带上项目 `.idea/workspace.xml` 里 IDEA 用的 `settings.xml` 与本地仓库（`-s` / `-Dmaven.repo.local`），找不到时退回 Maven 安装目录的 `conf/settings.xml`；
+3. 结束原进程树，等端口释放（Windows 用 `taskkill /T /F`；macOS/Linux 杀进程组 `kill -9 -<pid>`）；
+4. 用同样的 classpath/主类重新拉起，日志写 `<数据目录>/java-logs/<主类名>/<时间戳>.log`（每次启动一个文件），等端口健康后返回新 pid。
+
+接管后 IDEA 的 Run 窗口会显示该进程「已结束」——因为新进程不再挂在 IDEA 下。但**调试能力没丢**：重启时会把原来的 `suspend=y` 调试参数改写成 `server=y,suspend=n,address=127.0.0.1:<原端口>`，你在 IDEA 里用「Remote JVM Debug」连这个端口就能继续断点。编译失败时不会动原进程。
+
+插件启动的进程带 `-DdshApiRunner.runId=<服务名>` 标记，所以服务列表能稳定区分「谁起的」；即使状态文件丢了也能认出来。
+
+另外两种模式仍然可用：
+- **IDEA Run/Debug 按钮 + 不想被接管** → 配 `mode: observe`。模型调 `verify` 时不会杀进程，只等健康检查通过；需要重启时你在 IDEA 里点重启，模型调 `service action=wait` 等你起来。
+- **完全交给插件** → 配 `mode: managed`，`command` 写成 `mvnw.cmd spring-boot:run` 这类可拉起的命令。注意 IDEA 和插件不要同时占用同一个端口。
+
+## HTTP 接口
+
+除工具外，插件还注册了同源路由（需要 DSH 会话认证）：
+
+- `GET /dsh-api-runner/api/config` → 配置摘要
+- `POST /dsh-api-runner/api/call` → `{ api_id, params }`
+- `POST /dsh-api-runner/api/service` → `{ service_id, service_action }`
+- `POST /dsh-api-runner/api/log` → `{ log_id, ... }`
+- `GET /dsh-api-runner/api/ui` → 面板数据（当前项目的接口与 token 状态、已忽略的 Java 服务、已知项目清单 `projects[]`；带 `?project=<绝对路径>` 可切到别的项目）
+- `POST /dsh-api-runner/api/ui/api` → 保存/覆盖一个面板接口
+- `POST /dsh-api-runner/api/ui/api/delete` → `{ id }`
+- `POST /dsh-api-runner/api/ui/base-url` → `{ baseUrl }`
+- `POST /dsh-api-runner/api/ui/token/clear` → `{ login_id }`
+- `POST /dsh-api-runner/api/login` → `{ api_id, params }`
+- `GET /dsh-api-runner/api/java` → 本机 Java 服务列表（含每个端口的角色、忽略状态、日志路径、已保存配方）
+- `POST /dsh-api-runner/api/java/bind` → `{ binding: { pid, port, mainClass } }`
+- `POST /dsh-api-runner/api/java/unbind` → `{ pid }`
+- `POST /dsh-api-runner/api/java/ignore` → `{ item: { mainClass, name, kind } }` 忽略（只是不显示）
+- `POST /dsh-api-runner/api/java/unignore` → `{ item: { mainClass, name, kind } }`
+- `POST /dsh-api-runner/api/java/start` → `{ pid, port?, compile? }` 接管启动
+- `POST /dsh-api-runner/api/java/stop` → `{ id | pid }`
+- `POST /dsh-api-runner/api/java/restart` → `{ id | pid, compile? }`
+- `POST /dsh-api-runner/api/java/save` → `{ id | pid }` 保存启动配方
+- `POST /dsh-api-runner/api/java/unsave` → `{ id }`
+- `POST /dsh-api-runner/api/java/start-saved` → `{ id, compile?, port?, debug?, timeout_ms? }` 按配方启动
+- `GET /dsh-api-runner/api/java/log?id=<服务名>&from=<字节偏移>` → 插件启动服务的日志增量
+- `GET /dsh-api-runner/api/java/detail?id=<id 或 pid>&source=&from=&lines=&max_bytes=` → 服务详情 + 日志（含可选日志文件清单；不给 `from` 时按 `lines` 取末尾若干行）
+- `GET /dsh-api-runner/api/settings` → 全局设置（默认工作区、Maven 主路径、数据目录、生效目录）
+- `POST /dsh-api-runner/api/settings` → `{ settings: { dataDir?, workspace?, mavenHome? } }`
+
+未认证返回 401 JSON（`{ok:false, code:'UNAUTHORIZED'}`）。面板请求带 `x-dsh-session-id` 让 host 解析项目 cwd；没有会话时用 `?cwd=` 或 body 里的 `cwd` 兜底（必须是绝对路径）。
+
+## 状态与清理
+
+- 运行状态：`<数据目录>/api-runner-state.json`，`logs` 与 `services` 两个命名空间互不覆盖。
+- 面板数据：`<数据目录>/api-runner-ui.json`，存 baseUrl、面板接口、登录态、token（含明文，注意别泄漏）、已忽略的 Java 服务清单、已保存的启动配方。
+- 插件设置：`<数据目录>/api-runner-settings.json`，存默认工作区、Maven 主路径与自定义数据目录（本身永远在 `DSH_HOME` 下，否则会先有鸡还是先有蛋）。
+- Java 服务日志：`<数据目录>/java-logs/<服务名>/<时间戳>.log`，每次启动一个文件。
+- 数据目录默认是 `DSH_HOME`，可在 DSH 设置 →「接口调试」里改成任意绝对路径。
+- 卸载插件不会杀 `managed` 服务（故意设计，避免 DSH 重启把后端带停）；需要时手动停或调 `service_action=stop`。
+
+## 开发
+
+```powershell
+node test/smoke.mjs     # 单元 + 集成（起临时 http server 当后端）
+node test/plugin.mjs    # 插件入口契约 + 面板 HTTP 路由（桩 ctx）
+node test/client.mjs    # client bundle 形态（__ModuleLoader__ + registerTab）
+node test/managed.mjs   # managed 服务启停（真起 node 进程）
+node test/java.mjs      # 接管 IDEA 服务（真起 JVM：快照/剥调试参数/编译/停止/重启）
+```
+
+### 改完源码要重新装载（重要）
+
+DSH 用 ESM 动态 import 加载插件，Node 按 **模块 URL** 缓存。在同一个 DSH 进程里关掉再打开 bundle 只会重跑 `apply()`，
+**不会重新 import 模块**，所以直接改 `src/` 看不到任何变化。必须让入口 URL 变化：
+
+```powershell
+node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.yml 的入口 URL
+```
+
+然后到 DSH 里把 `dsh-api-runner` bundle 关掉再打开。`scripts/stage.mjs --clean` 会顺手清理旧版本目录。
+
+反过来，**提交代码前要跑 `node scripts/stage.mjs --release`**：它把 `cordis.patch.yml` 的入口从本机 `build/vN/main.js` 的 `file://` 路径改回包名 `dsh-api-runner`，这样别人装上才能正常解析入口，仓库里也不留本机绝对路径。
+
+## 已知限制
+
+- 只支持 HTTP/HTTPS 接口，没有 multipart 文件上传。
+- `managed` 服务的进程发现依赖状态文件里的 pid；pid 被系统回收复用后可能误判存活（`isPidAlive` 只做存在性检查）。
+- 日志按字节读，多字节编码（GBK 等）跨读取边界时可能出现半个字符。
+- 侧边栏面板的接口页签负责「配置 + 试调用」，服务页签负责「列表 + 接管/停止/重启 + 实时日志」；`verify`（重启→等日志→调接口一条龙）仍只在对话里让模型调工具完成。
+- Java 服务发现依赖 `jps`（取 `JAVA_HOME/bin/jps`，找不到就用 PATH 上的 `jps`），没有 JDK 时列表为空并给出提示；端口来源按平台分流（Windows `netstat -ano -p tcp`，macOS/Linux `lsof -nP -iTCP -sTCP:LISTEN`，没有 lsof 时退回 Linux `netstat -tlnp`），同一 pid 多端口时会逐个做 HTTP 探测挑出真正讲业务协议的端口。
+- Maven 探测顺序：设置里的「Maven 主路径」→ `MAVEN_HOME` → `M2_HOME` → `PATH` → IDEA 自带 Maven（三个平台都会找 IDEA 进程路径）；找不到 `mvn` 时接管启动会跳过编译并给出提示，服务仍按原参数拉起。
+- 接管依赖 `jcmd`（同一个 JDK），且要求原进程是标准启动器起的（有 classpath）。用 `-jar` 或 argfile 启动的进程无法原样还原。
+- 接管后进程不再挂在 IDEA 下（IDEA Run 窗口显示已结束），需用「Remote JVM Debug」连原调试端口继续断点。
+- 面板保存的 token 是明文落在 `<数据目录>/api-runner-ui.json`（只在 UI 与工具输出里脱敏），本机共用的场景请自行注意。
+- 按配方启动要求配方里有完整的 classpath（所以得先「保存」过一次）；`.cmd`/`.bat` 的 Maven 用 `cmd.exe` 调用，路径含空格已处理。
+- 日志首屏按行读末尾，历史大文件（几百 MB）会被截断到所选行数；要看更早的内容请切换日志文件或加大行数。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

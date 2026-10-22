@@ -1,0 +1,9 @@
+# dsh-api-runner bundle patch（dsh.bundle.patch：顶层数组 loader patch entries）
+# 安装：dsh plugin --profile desktop add "link:/绝对路径/到/dsh-api-runner"
+#
+# name 写包名时由 DSH 从安装目录解析入口，这是发布形态（提交到仓库、别人装得上的就是这一份）。
+# 开发期改源码后必须让入口 URL 变化（Node 按模块 URL 缓存 ESM），此时跑 `node scripts/stage.mjs`
+# 会把下面这行改成本机 build/vN/main.js 的 file URL；提交前跑 `node scripts/stage.mjs --release` 改回来。
+- insert:
+    - id: api-runner
+      name: dsh-api-runner
