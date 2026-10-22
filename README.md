@@ -26,14 +26,6 @@ dsh plugin --profile web add github:lhhzmz229/dsh-api-runner
 DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 `dsh-api-runner@github:lhhzmz229/dsh-api-runner` 也等价。装完重启 DSH（或把 `dsh-api-runner` bundle 关掉再打开）生效。
 
-### 从 NPM 安装
-
-```bash
-dsh plugin --profile web add dsh-api-runner
-```
-
-（NPM 包发布后可用；这也是插件能出现在 DSH「插件中心」里的前提。）
-
 ### 本地开发：link 安装
 
 ```bash
