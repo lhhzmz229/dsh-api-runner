@@ -21,3 +21,7 @@ Thumbs.db
 
 # 本地私有配置（放进来的真实接口/口令不要提交）
 api-runner.local.yml
+
+# 本地私有文档：发版流程等，只在本机使用，不上传 GitHub / 不打进 npm 包
+RELEASE.local.md
+*.local.md
