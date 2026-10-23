@@ -438,6 +438,129 @@ await ok('工具 action 里有 login 与 java', () => {
     assert.ok(tool.parameters.properties.java_ids, '应有 java_ids 参数');
 });
 
+await ok('工具支持 db action 与相关参数', () => {
+    const tool = registered.tools[0];
+    const props = tool.parameters.properties;
+    assert.ok(props.action.enum.includes('db'), 'action 应包含 db');
+    assert.ok(props.db_action, '应有 db_action 参数');
+    for (const action of ['list_connections', 'test', 'save', 'delete', 'query', 'list_tables', 'describe_table']) {
+        assert.ok(props.db_action.enum.includes(action), `db_action 应包含 ${action}`);
+    }
+    assert.ok(props.connection_id, '应有 connection_id');
+    assert.ok(props.sql, '应有 sql');
+    assert.ok(props.db_params, '应有 db_params');
+    assert.ok(props.db_readonly, '应有 db_readonly');
+});
+
+await ok('db 路由都已挂载', async () => {
+    const route = registered.routes[0];
+    const get = (path) => ({
+        url: path,
+        method: 'GET',
+        headers: {},
+        async *[Symbol.asyncIterator]() {},
+    });
+    const post = (path, payload) => ({
+        url: path,
+        method: 'POST',
+        headers: {},
+        async *[Symbol.asyncIterator]() {
+            yield Buffer.from(JSON.stringify(payload), 'utf8');
+        },
+    });
+
+    // 连接列表：空环境应返回空数组而不是 404
+    const list = createMockResponse();
+    await route.handler(get('/dsh-api-runner/api/db'), list);
+    const listPayload = JSON.parse(list.body);
+    assert.equal(listPayload.ok, true, list.body);
+    assert.ok(Array.isArray(listPayload.connections));
+
+    // 缺参数时给出明确错误，不是 404
+    const noId = createMockResponse();
+    await route.handler(post('/dsh-api-runner/api/db/query', { sql: 'SELECT 1' }), noId);
+    const noIdPayload = JSON.parse(noId.body);
+    assert.equal(noIdPayload.ok, false, noId.body);
+    assert.equal(noIdPayload.code, 'NOT_FOUND', '空 connection_id 应走 NOT_FOUND 而不是路由缺失');
+
+    // 表结构路由存在
+    const table = createMockResponse();
+    await route.handler(get('/dsh-api-runner/api/db/table?connection_id=nope&name=t'), table);
+    const tablePayload = JSON.parse(table.body);
+    assert.equal(tablePayload.ok, false, table.body);
+    assert.equal(tablePayload.code, 'NOT_FOUND');
+});
+
+await ok('db 工具动作能跑通 SQLite 全链路', async () => {
+    const tool = registered.tools[0];
+    const dbFile = path.join(tmp, 'tool-test.db');
+    const exec = (args) => tool.execute(args, { agent: { session: { id: 's1' } } });
+
+    // 保存连接
+    const saved = await exec({
+        action: 'db',
+        db_action: 'save',
+        connection: { name: '工具测试库', type: 'sqlite', database: dbFile },
+    });
+    assert.equal(saved.isError, false, saved.text);
+    const savedPayload = JSON.parse(saved.text);
+    assert.equal(savedPayload.ok, true, saved.text);
+    const connId = savedPayload.connection.id;
+    assert.ok(connId);
+    assert.equal(saved.text.includes('secret'), false, '输出里不应有密码字段');
+
+    // 建表（只读关闭）
+    const created = await exec({
+        action: 'db', db_action: 'query', connection_id: connId,
+        sql: 'CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)',
+        db_readonly: false,
+    });
+    assert.equal(JSON.parse(created.text).ok, true, created.text);
+
+    // 写入
+    const inserted = await exec({
+        action: 'db', db_action: 'query', connection_id: connId,
+        sql: 'INSERT INTO items (label) VALUES (?)',
+        db_params: ['hello'],
+        db_readonly: false,
+    });
+    assert.equal(JSON.parse(inserted.text).ok, true, inserted.text);
+
+    // 只读查询
+    const queried = await exec({
+        action: 'db', db_action: 'query', connection_id: connId,
+        sql: 'SELECT * FROM items',
+    });
+    const q = JSON.parse(queried.text);
+    assert.equal(q.ok, true, queried.text);
+    assert.equal(q.rowCount, 1);
+    assert.equal(q.rows[0].label, 'hello');
+
+    // 默认只读：写操作被拒
+    const blocked = await exec({
+        action: 'db', db_action: 'query', connection_id: connId,
+        sql: 'DELETE FROM items',
+    });
+    const b = JSON.parse(blocked.text);
+    assert.equal(b.ok, false, blocked.text);
+    assert.equal(b.code, 'READONLY_VIOLATION');
+    assert.equal(blocked.isError, true, '失败时 isError 应为 true');
+
+    // 元数据
+    const tables = await exec({ action: 'db', db_action: 'list_tables', connection_id: connId });
+    const t = JSON.parse(tables.text);
+    assert.equal(t.ok, true, tables.text);
+    assert.ok(t.tables.some((x) => x.name === 'items'));
+
+    const detail = await exec({ action: 'db', db_action: 'describe_table', connection_id: connId, table: 'items' });
+    const d = JSON.parse(detail.text);
+    assert.equal(d.ok, true, detail.text);
+    assert.ok(d.columns.some((c) => c.name === 'label'));
+
+    // 清理
+    await exec({ action: 'db', db_action: 'delete', connection_id: connId });
+});
+
 // ---- 清理 ----
 for (const effect of registered.effects) effect.dispose?.();
 server.close();

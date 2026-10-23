@@ -25,7 +25,14 @@ window.__ModuleLoader__.load({
         /** 面板 id：既是左栏全局页在 `main` 里的 key，也是 `sidebar.panellist` 的 id */
         const TAB_ID = 'dsh-api-runner';
         const API = '/dsh-api-runner/api';
-        const STYLE_ID = 'dsh-api-runner-style';
+        /**
+         * 样式元素 id 带版本后缀。
+         *
+         * 为什么：宿主的 styles.insert 和浏览器都会按 id 去重，如果 id 固定，
+         * 插件升级后页面里仍是旧 CSS（表现为「改了样式但刷新没用」）。
+         * 每次改样式就把版本号 +1，旧元素自然失效，新样式必定注入。
+         */
+        const STYLE_ID = 'dsh-api-runner-style-v3';
         const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'];
 
         // ---------------------------------------------------------------- 样式
@@ -36,6 +43,8 @@ window.__ModuleLoader__.load({
   --ar-accent: var(--dsw-alias-brand-primary, #0a84ff);
   --ar-surface: rgba(120, 120, 128, .12);
   --ar-surface-strong: rgba(120, 120, 128, .18);
+  /* 选中态用的「抬起」底色：深色主题下比背景亮一点，浅色主题下接近纯白 */
+  --ar-elevated: var(--dsw-alias-bg-elevated, rgba(255, 255, 255, .14));
   --ar-sep: rgba(120, 120, 128, .22);
   --ar-danger: var(--dsw-alias-state-error-primary, #ff453a);
   --ar-success: var(--dsw-alias-state-success-primary, #30d158);
@@ -48,25 +57,50 @@ window.__ModuleLoader__.load({
 }
 @media (prefers-color-scheme: light) {
   .ar-root { --ar-surface: rgba(120, 120, 128, .09); --ar-surface-strong: rgba(120, 120, 128, .15);
+    --ar-elevated: var(--dsw-alias-bg-elevated, #ffffff);
     --ar-sep: rgba(60, 60, 67, .16);
     --ar-danger: var(--dsw-alias-state-error-primary, #ff3b30);
     --ar-success: var(--dsw-alias-state-success-primary, #34c759);
     --ar-warn: var(--dsw-alias-state-warn-primary, #ff9f0a); }
 }
 
-/* ---- 顶部：整条分段控件 ---- */
+/* ---- 顶部：页签胶囊（参照 DSH 插件详情页的分段控件）----
+   两层结构刻意做得不一样，一眼能看出层级：
+     · 顶部 ar-topbar：整条浅灰底容器，装四个页签，选中项白底 + 阴影
+     · 一级标题 ar-segmented：独立小胶囊，不套外层容器，选中项白底
+*/
 .ar-top { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 10px 12px 8px; }
-.ar-tabs { flex: 1 1 auto; display: flex; gap: 2px; padding: 2px; min-width: 0;
-  background: var(--ar-surface); border-radius: var(--ar-r-ctrl); }
+/* 窄面板（右侧栏 ~300px）里四个页签 + 刷新按钮会挤，允许容器横向滚动兜底 */
+.ar-tabs { flex: 1 1 auto; display: flex; gap: 2px; padding: 3px; min-width: 0;
+  background: var(--ar-surface); border-radius: var(--ar-r-ctrl); overflow-x: auto; scrollbar-width: none; }
+.ar-tabs::-webkit-scrollbar { display: none; }
 .ar-tab { flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   border: 0; background: transparent; color: inherit; cursor: pointer; padding: 5px 8px; font: inherit; font-size: 12.5px;
-  border-radius: var(--ar-r-pill); white-space: nowrap; opacity: .68;
+  border-radius: var(--ar-r-pill); white-space: nowrap; opacity: .7;
   transition: background-color .18s var(--ar-ease), opacity .18s var(--ar-ease), box-shadow .18s var(--ar-ease); }
-.ar-tab:hover { opacity: .9; }
-.ar-tab.on { opacity: 1; font-weight: 600; background: var(--ar-surface-strong); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+.ar-tab:hover { opacity: .92; }
+/* 选中：白底 + 轻阴影 + 深色字，和宿主的分段控件一致 */
+.ar-tab.on { opacity: 1; font-weight: 600; background: var(--ar-elevated); box-shadow: 0 1px 3px rgba(0, 0, 0, .14); }
 .ar-count { font-size: 10px; font-weight: 600; line-height: 1; padding: 2px 4px; border-radius: 4px;
   background: var(--ar-surface-strong); opacity: .85; }
-.ar-tab.on .ar-count { background: var(--ar-accent); color: #fff; opacity: 1; }
+.ar-tab.on .ar-count { background: var(--ar-surface-strong); color: inherit; opacity: 1; }
+
+/* ---- 一级标题：独立小胶囊（参照 DSH 插件详情页的「连接…/项目…/数据…」）---- */
+/* 一级标题胶囊：强制横向一排，绝不换行。
+   面板很窄（右侧栏只有 ~300px），一旦允许 wrap 就会被挤成竖排——
+   参照宿主插件详情页的做法：横向滚动，胶囊本身不压缩。 */
+.ar-segmented { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+  padding: 2px 0 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.ar-segmented::-webkit-scrollbar { display: none; }
+.ar-seg { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; border: 0; cursor: pointer;
+  padding: 5px 12px; font: inherit; font-size: 12.5px; white-space: nowrap;
+  background: var(--ar-surface); color: inherit; border-radius: var(--ar-r-pill); opacity: .82;
+  transition: background-color .18s var(--ar-ease), opacity .18s var(--ar-ease), box-shadow .18s var(--ar-ease); }
+.ar-seg:hover { opacity: 1; background: var(--ar-surface-strong); }
+.ar-seg.on { opacity: 1; font-weight: 600; background: var(--ar-elevated);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .14), 0 0 0 .5px rgba(0, 0, 0, .04); }
+.ar-seg .n { font-size: 10.5px; font-weight: 600; opacity: .55; }
+.ar-seg.on .n { opacity: .8; }
 
 .ar-body { flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto; padding: 2px 12px 24px;
   display: flex; flex-direction: column; gap: 10px; }
@@ -91,7 +125,11 @@ window.__ModuleLoader__.load({
    注意：选中态用实心 accent 而不是半透明混合，避免依赖 color-mix，浅色/深色主题都稳。 */
 .ar-tabs.sub { flex: none; background: transparent; padding: 0; gap: 4px; }
 .ar-tabs.sub .ar-tab { padding: 4px 8px; font-size: 12px; background: var(--ar-surface); opacity: .72; }
-.ar-tabs.sub .ar-tab:hover { opacity: .95; }
+/* 二级页签（已接管/运行中/…、项目分类）：改成和一级标题同款的小胶囊，
+   但用「品牌色实心」区分层级，不和顶部那排白底选中块混淆。 */
+.ar-tabs.sub { flex: none; background: transparent; padding: 0; gap: 6px; }
+.ar-tabs.sub .ar-tab { flex: 0 0 auto; padding: 5px 11px; font-size: 12px; background: var(--ar-surface); opacity: .82; }
+.ar-tabs.sub .ar-tab:hover { opacity: 1; }
 .ar-tabs.sub .ar-tab.on {
   background: var(--ar-accent); color: #fff; opacity: 1; font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
@@ -207,6 +245,17 @@ window.__ModuleLoader__.load({
 .ar-empty-title { font-size: 13px; font-weight: 600; }
 .ar-empty-hint { font-size: 12px; opacity: .55; line-height: 1.6; max-width: 230px; }
 
+/* ---- 数据库：结果表格 ---- */
+.ar-item-on { box-shadow: inset 2px 0 0 var(--ar-accent); }
+.ar-table-wrap { width: 100%; overflow-x: auto; border-radius: var(--ar-r-ctrl); background: var(--ar-surface); }
+.ar-table { border-collapse: collapse; width: 100%; font-size: 12px; font-family: var(--ar-mono); }
+.ar-table th { text-align: left; font-weight: 600; padding: 6px 9px; white-space: nowrap;
+  border-bottom: 1px solid var(--ar-sep); opacity: .7; position: sticky; top: 0; background: var(--ar-surface-strong); }
+.ar-table td { padding: 5px 9px; border-bottom: 1px solid var(--ar-sep); white-space: nowrap; max-width: 320px;
+  overflow: hidden; text-overflow: ellipsis; }
+.ar-table tbody tr:last-child td { border-bottom: none; }
+.ar-table tbody tr:hover td { background: var(--ar-surface-strong); }
+
 /* ---- 一键启动进度 ---- */
 .ar-batch { display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: var(--ar-r-card);
   background: var(--ar-surface); }
@@ -248,22 +297,25 @@ window.__ModuleLoader__.load({
 
         /**
          * 插入样式表。
-         * 优先用宿主给动态 Client half 的 styles.insert（由 DSH 管理生命周期、
-         * 保证插到正确的文档根）；取不到才退回 document.head，与 dsh-db-tool 同法。
+         *
+         * 不再依赖宿主的 styles.insert：它按插件 id 去重，插件升级后页面里
+         * 仍是旧 CSS（胶囊退化成原生 button、竖排），刷新也无效。
+         * 现在自己维护 <style>，并**先移除所有旧版本元素**再插入，
+         * 保证每次加载都是当前这份样式。
          */
-        function installStyles(ctx) {
-            let api;
-            if (typeof styles !== 'undefined' && styles && typeof styles.insert === 'function') api = styles;
-            else if (ctx && typeof ctx.get === 'function') api = ctx.get('styles');
-            if (api && typeof api.insert === 'function') {
-                api.insert(CSS);
-                return;
+        function installStyles() {
+            const head = document.head || document.documentElement;
+            // 清掉历史版本（含旧的无版本号 id），避免旧规则覆盖新规则
+            for (const node of document.querySelectorAll('style[id^="dsh-api-runner-style"]')) {
+                if (node.id !== STYLE_ID) node.remove();
             }
-            if (document.getElementById(STYLE_ID)) return;
-            const el = document.createElement('style');
-            el.id = STYLE_ID;
-            el.textContent = CSS;
-            (document.head || document.documentElement).appendChild(el);
+            let el = document.getElementById(STYLE_ID);
+            if (el === null) {
+                el = document.createElement('style');
+                el.id = STYLE_ID;
+                head.appendChild(el);
+            }
+            if (el.textContent !== CSS) el.textContent = CSS;
         }
 
         // ---------------------------------------------------------------- 工具
@@ -611,6 +663,174 @@ window.__ModuleLoader__.load({
                     : null);
         }
 
+        /**
+         * 数据库连接编辑表单。
+         *
+         * 密码框用 type=password 且编辑时不回填：服务端只回传掩码，
+         * 留空表示「不修改密码」，避免编辑别处字段时把密码清掉。
+         */
+        function EditDbForm(props) {
+            const { value, onChange, onSave, onCancel, busy } = props;
+            const set = (key, next) => onChange({ ...value, [key]: next });
+            const isSqlite = value.type === 'sqlite';
+            const needsHost = !isSqlite;
+            return h('div', { className: 'ar-card' },
+                h('div', { className: 'ar-name' }, value.id ? `编辑连接 ${value.name}` : '新增数据库连接'),
+                h(Field, { label: '名称' }, h('input', {
+                    className: 'ar-in', value: value.name, placeholder: '如 本地 MySQL',
+                    onChange: (e) => set('name', e.target.value),
+                })),
+                h(Field, { label: '类型' }, h('select', {
+                    className: 'ar-sel', value: value.type,
+                    onChange: (e) => set('type', e.target.value),
+                }, ['sqlite', 'mysql', 'postgres', 'oracle', 'dm'].map((t) => h('option', { key: t, value: t }, t)))),
+                isSqlite
+                    ? h(Field, { label: '文件路径' }, h('input', {
+                        className: 'ar-in ar-mono', value: value.database,
+                        placeholder: ':memory: 或 D:\\data\\app.db',
+                        onChange: (e) => set('database', e.target.value),
+                    }))
+                    : h('div', null,
+                        h('div', { className: 'ar-row' },
+                            h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+                                h(Field, { label: 'host' }, h('input', {
+                                    className: 'ar-in ar-mono', value: value.host, placeholder: '127.0.0.1',
+                                    onChange: (e) => set('host', e.target.value),
+                                }))),
+                            h('div', { style: { flex: '0 0 90px' } },
+                                h(Field, { label: '端口' }, h('input', {
+                                    className: 'ar-in ar-mono', value: value.port, placeholder: '默认',
+                                    onChange: (e) => set('port', e.target.value),
+                                })))),
+                        h(Field, { label: '数据库' }, h('input', {
+                            className: 'ar-in ar-mono', value: value.database, placeholder: '库名',
+                            onChange: (e) => set('database', e.target.value),
+                        })),
+                        h(Field, { label: '用户名' }, h('input', {
+                            className: 'ar-in', value: value.username, placeholder: 'root',
+                            onChange: (e) => set('username', e.target.value),
+                        })),
+                        h(Field, { label: '密码' }, h('input', {
+                            className: 'ar-in', type: 'password', value: value.password,
+                            placeholder: value.id ? '留空表示不修改' : '',
+                            onChange: (e) => set('password', e.target.value),
+                        }))),
+                h(Field, { label: '额外参数', top: true }, h('textarea', {
+                    className: 'ar-ta ar-mono', value: value.extraText,
+                    placeholder: '可选，JSON：{"ssl":true}',
+                    onChange: (e) => set('extraText', e.target.value),
+                })),
+                h('div', { className: 'ar-hint' }, '密码会加密后保存，列表与工具输出只显示掩码。'),
+                h('div', { className: 'ar-row' },
+                    h('button', {
+                        className: 'ar-btn primary',
+                        disabled: Boolean(busy),
+                        onClick: () => {
+                            // 额外参数是 JSON，解析失败就拦在这里，别把坏值发到后端
+                            let extra;
+                            const text = String(value.extraText || '').trim();
+                            if (text !== '') {
+                                try {
+                                    extra = JSON.parse(text);
+                                } catch (error) {
+                                    window.alert(`额外参数不是合法 JSON：${error.message}`);
+                                    return;
+                                }
+                            }
+                            onSave({
+                                id: value.id || undefined,
+                                name: value.name,
+                                type: value.type,
+                                host: value.host,
+                                port: value.port === '' ? undefined : Number(value.port),
+                                database: value.database,
+                                username: value.username,
+                                // 空密码不传，让后端保留原值
+                                password: value.password === '' ? undefined : value.password,
+                                extra,
+                            });
+                        },
+                    }, '保存'),
+                    h('button', { className: 'ar-btn ghost', onClick: onCancel }, '取消')));
+        }
+
+        /** SQL 执行结果：表格 + 行数/耗时 */
+        function DbResultCard(props) {
+            const { result, onClose } = props;
+            if (!result) return null;
+            if (result.ok === false) {
+                return h('div', { className: 'ar-card' },
+                    h('div', { className: 'ar-row' },
+                        h('span', { className: 'ar-badge', style: { background: 'var(--ar-danger)', color: '#fff' } }, result.code || 'ERROR'),
+                        h('span', { className: 'ar-spacer' }),
+                        h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: onClose }, '×')),
+                    h('div', { className: 'ar-hint ar-mono', style: { overflowWrap: 'anywhere' } }, result.message || '执行失败'));
+            }
+            const columns = Array.isArray(result.columns) ? result.columns : [];
+            const rows = Array.isArray(result.rows) ? result.rows : [];
+            const affected = result.affectedRows;
+            return h('div', { className: 'ar-card' },
+                h('div', { className: 'ar-row' },
+                    h('span', { className: 'ar-badge ok' }, 'OK'),
+                    h('span', { className: 'ar-hint' }, `${result.rowCount} 行 · ${result.durationMs}ms`),
+                    result.truncated ? h('span', { className: 'ar-badge', style: { background: 'var(--ar-warn)' } }, `已截断至 ${result.maxRows}`) : null,
+                    h('span', { className: 'ar-spacer' }),
+                    h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: onClose }, '×')),
+                typeof affected === 'number' && affected > 0
+                    ? h('div', { className: 'ar-hint' }, `影响 ${affected} 行`)
+                    : null,
+                columns.length > 0 && rows.length > 0
+                    ? h('div', { className: 'ar-table-wrap' },
+                        h('table', { className: 'ar-table' },
+                            h('thead', null, h('tr', null, columns.map((c) => h('th', { key: c }, c)))),
+                            h('tbody', null, rows.map((row, index) => h('tr', { key: index },
+                                columns.map((c) => h('td', { key: c }, formatCell(row[c]))))))))
+                    : h('div', { className: 'ar-hint' }, rows.length === 0 ? '查询成功，没有数据行。' : ''));
+        }
+
+        /** 单元格渲染：对象/数组转 JSON，null 显示为灰色占位 */
+        function formatCell(value) {
+            if (value === null) return h('span', { className: 'ar-faint' }, 'NULL');
+            if (value === undefined) return '';
+            if (typeof value === 'object') {
+                try {
+                    return JSON.stringify(value);
+                } catch {
+                    return String(value);
+                }
+            }
+            if (typeof value === 'boolean') return value ? 'true' : 'false';
+            return String(value);
+        }
+
+        /** 表结构：字段表 + 索引 */
+        function TableDetail(props) {
+            const { detail, onClose } = props;
+            const columns = Array.isArray(detail.columns) ? detail.columns : [];
+            const indexes = Array.isArray(detail.indexes) ? detail.indexes : [];
+            return h('div', { className: 'ar-card' },
+                h('div', { className: 'ar-row' },
+                    h('span', { className: 'ar-name ar-mono' }, detail.table),
+                    h('span', { className: 'ar-spacer' }),
+                    h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: onClose }, '×')),
+                h('div', { className: 'ar-table-wrap' },
+                    h('table', { className: 'ar-table' },
+                        h('thead', null, h('tr', null,
+                            h('th', null, '字段'), h('th', null, '类型'), h('th', null, '可空'), h('th', null, '默认'), h('th', null, '主键'))),
+                        h('tbody', null, columns.map((c) => h('tr', { key: c.name },
+                            h('td', { className: 'ar-mono' }, c.name),
+                            h('td', { className: 'ar-mono ar-muted' }, c.type || ''),
+                            h('td', null, c.nullable ? 'Y' : ''),
+                            h('td', { className: 'ar-mono ar-muted' }, c.defaultValue === null || c.defaultValue === undefined ? '' : String(c.defaultValue)),
+                            h('td', null, c.primaryKey ? 'PK' : '')))))),
+                indexes.length > 0
+                    ? h('div', null,
+                        h('div', { className: 'ar-sec' }, h('span', { className: 't' }, `索引 · ${indexes.length}`)),
+                        indexes.map((i) => h('div', { key: i.name, className: 'ar-hint ar-mono ar-cut' },
+                            `${i.name}${i.unique ? ' (unique)' : ''}${Array.isArray(i.columns) ? ` · ${i.columns.join(', ')}` : ''}${i.definition ? ` · ${i.definition}` : ''}`)))
+                    : null);
+        }
+
         function SavedRow(props) {
             const { item, busy, onStart, onDelete } = props;
             return h('div', { className: 'ar-item' },
@@ -888,6 +1108,19 @@ window.__ModuleLoader__.load({
             const [mavenHomeDraft, setMavenHomeDraft] = React.useState('');
             /** 一键启动的后台批次进度（null = 没有正在进行的批次） */
             const [batch, setBatch] = React.useState(null);
+            /** 数据库：连接列表 / 选中的连接 / 执行结果 / 表清单 */
+            const [dbConnections, setDbConnections] = React.useState([]);
+            const [dbError, setDbError] = React.useState('');
+            const [dbActive, setDbActive] = React.useState('');
+            const [dbForm, setDbForm] = React.useState(null);
+            const [dbSql, setDbSql] = React.useState('');
+            const [dbResult, setDbResult] = React.useState(null);
+            const [dbReadonly, setDbReadonly] = React.useState(true);
+            const [dbTables, setDbTables] = React.useState([]);
+            const [dbTableDetail, setDbTableDetail] = React.useState(null);
+            const [dbDbBusy, setDbDbBusy] = React.useState('');
+            /** 数据库子页的一级标题：conn（连接）/ sql / schema（表结构） */
+            const [dbSection, setDbSection] = React.useState('conn');
 
             const headers = React.useMemo(() => ({ 'Content-Type': 'application/json', 'x-dsh-session-id': sessionId }), [sessionId]);
             const get = React.useCallback(async (path) => {
@@ -1318,9 +1551,142 @@ window.__ModuleLoader__.load({
                 }
             };
 
+            // ---------------------------------------------------------------- 数据库
+            /**
+             * 数据库连接是跨项目的（同一套库常被多个项目共用），
+             * 所以这里不跟着「接口」页的项目页签走，始终操作全局连接列表。
+             */
+            const refreshDb = React.useCallback(async () => {
+                try {
+                    const data = await request('db', { headers });
+                    if (data.ok === false) {
+                        setDbError(data.message || '读取数据库连接失败');
+                        setDbConnections([]);
+                        return;
+                    }
+                    const list = Array.isArray(data.connections) ? data.connections : [];
+                    setDbConnections(list);
+                    setDbError('');
+                    // 选中的连接被删了就退回第一个
+                    setDbActive((current) => (list.some((item) => item.id === current) ? current : (list[0] ? list[0].id : '')));
+                } catch (e) {
+                    setDbError(e.message);
+                }
+            }, [headers]);
+
+            /**
+             * 数据库连接只在面板可见时加载一次。
+             *
+             * 注意：这个 effect 必须放在 refreshDb 声明**之后**。
+             * 之前把它并进上面那个主 effect 的依赖数组，而那个 effect 在 refreshDb
+             * 之前执行，const 的暂时性死区直接抛 `Cannot access 'refreshDb' before
+             * initialization`，整个 Panel 崩掉 -> 面板白屏。
+             */
+            React.useEffect(() => {
+                if (!visible) return undefined;
+                refreshDb();
+                return undefined;
+            }, [visible, refreshDb]);
+
+            const loadDbTables = React.useCallback(async (connectionId) => {
+                if (!connectionId) { setDbTables([]); return; }
+                try {
+                    const data = await request(`db/tables?connection_id=${encodeURIComponent(connectionId)}`, { headers });
+                    setDbTables(data.ok === false ? [] : (Array.isArray(data.tables) ? data.tables : []));
+                    if (data.ok === false) setDbError(data.message || '读取表清单失败');
+                } catch (e) {
+                    setDbError(e.message);
+                }
+            }, [headers]);
+
+            const dbSave = async (value) => {
+                setDbDbBusy('save');
+                setDbError('');
+                try {
+                    const payload = await post('db/save', { connection: value });
+                    if (payload.ok === false) throw new Error(payload.message || '保存失败');
+                    setDbForm(null);
+                    setNotice(payload.message || '连接已保存');
+                    await refreshDb();
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
+            const dbDelete = async (item) => {
+                if (!window.confirm(`删除连接「${item.name}」？（只删除配置，不影响数据库本身）`)) return;
+                setDbDbBusy('delete');
+                try {
+                    const payload = await post('db/delete', { connection_id: item.id });
+                    if (payload.ok === false) throw new Error(payload.message || '删除失败');
+                    setNotice(payload.message || '已删除');
+                    setDbResult(null);
+                    setDbTables([]);
+                    await refreshDb();
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
+            const dbTest = async (item) => {
+                setDbDbBusy('test');
+                setDbError('');
+                try {
+                    const payload = await post('db/test', { connection_id: item.id });
+                    if (payload.ok) setNotice(`连接「${item.name}」正常（${payload.durationMs}ms）`);
+                    else setDbError(payload.message || '连接失败');
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
+            const dbRun = async () => {
+                if (!dbActive) { setDbError('请先选择一个连接'); return; }
+                if (String(dbSql).trim() === '') { setDbError('SQL 不能为空'); return; }
+                setDbDbBusy('query');
+                setDbError('');
+                setDbResult(null);
+                try {
+                    const payload = await post('db/query', {
+                        connection_id: dbActive,
+                        sql: dbSql,
+                        readonly: dbReadonly,
+                    });
+                    setDbResult(payload);
+                    if (payload.ok === false) setDbError(payload.message || '执行失败');
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
+            const dbDescribe = async (tableName) => {
+                if (!dbActive || !tableName) return;
+                setDbDbBusy('describe');
+                try {
+                    const data = await request(`db/table?connection_id=${encodeURIComponent(dbActive)}&name=${encodeURIComponent(tableName)}`, { headers });
+                    if (data.ok === false) { setDbError(data.message || '读取表结构失败'); return; }
+                    setDbTableDetail(data);
+                    // 点表名顺手把查询填好，省得手打
+                    setDbSql(`SELECT * FROM ${tableName} LIMIT 100`);
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
             const tabs = [
                 { id: 'apis', label: '接口', count: apis.length },
                 { id: 'services', label: '服务', count: runningList.length },
+                { id: 'db', label: '数据库', count: dbConnections.length },
                 { id: 'settings', label: '设置', count: 0 },
             ];
 
@@ -1578,6 +1944,115 @@ window.__ModuleLoader__.load({
                             ? state.sources.map((s) => h('div', { key: s, className: 'ar-kv' }, h('span', { className: 'k' }, '来源'), h('span', { className: 'v ar-mono ar-muted ar-cut', title: s }, s)))
                             : h('div', { className: 'ar-kv' }, h('span', { className: 'k' }, '来源'), h('span', { className: 'v ar-muted' }, '暂无 YAML 文件，接口全部来自面板')))));
 
+            // ---------------------------------------------------------------- 数据库面板
+            const activeConn = dbConnections.find((item) => item.id === dbActive) || null;
+            /** 数据库子页的一级标题：独立小胶囊，一次只看一块（和参考图的「连接…/SQL…/数据…」一致） */
+            const dbSections = [
+                { id: 'conn', label: '连接', count: dbConnections.length },
+                { id: 'sql', label: 'SQL', count: 0 },
+                { id: 'schema', label: '表结构', count: dbTables.length },
+            ];
+            const dbPane = h('div', { className: 'ar-pane' },
+                h(Banner, { kind: 'err', text: dbError, onClose: () => setDbError('') }),
+
+                h('div', { className: 'ar-segmented' }, dbSections.map((item) => h('button', {
+                    key: item.id,
+                    className: item.id === dbSection ? 'ar-seg on' : 'ar-seg',
+                    onClick: () => setDbSection(item.id),
+                    ref: (node) => {
+                        // 窄面板里胶囊会横向滚动，选中的那个必须自己滚进视野
+                        if (node && item.id === dbSection) node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                    },
+                }, item.label, item.count > 0 ? h('span', { className: 'n' }, item.count) : null))),
+
+                // ---- 连接 ----
+                dbSection === 'conn' ? h('div', { className: 'ar-pane' },
+                    h('div', { className: 'ar-row' },
+                        h('button', {
+                            className: 'ar-btn tonal',
+                            disabled: dbDbBusy !== '',
+                            onClick: () => setDbForm({
+                                id: '', name: '', type: 'sqlite', host: '', port: '',
+                                database: '', username: '', password: '', extraText: '',
+                            }),
+                        }, '新增连接'),
+                        h('span', { className: 'ar-spacer' }),
+                        h('button', { className: 'ar-btn ghost icon', disabled: dbDbBusy !== '', title: '重新读取连接列表', onClick: refreshDb }, '↻')),
+
+                    dbConnections.length === 0
+                        ? h(Empty, {
+                            icon: '🗄',
+                            title: '还没有数据库连接',
+                            hint: '点「新增连接」配一个。SQLite 直接填文件路径（:memory: 表示内存库）；MySQL / PostgreSQL / Oracle / 达梦填 host、端口、账号密码。',
+                        })
+                        : h('div', { className: 'ar-group' }, dbConnections.map((item) => h('div', {
+                            key: item.id,
+                            className: item.id === dbActive ? 'ar-item ar-item-on' : 'ar-item',
+                            onClick: () => { setDbActive(item.id); setDbResult(null); setDbTableDetail(null); loadDbTables(item.id); },
+                        },
+                            h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '5px' } },
+                                h('span', { className: 'ar-badge brand' }, item.type),
+                                h('span', { className: 'ar-name ar-cut', style: { flex: '0 1 auto' } }, item.name),
+                                item.id === dbActive ? h('span', { className: 'ar-badge' }, '当前') : null),
+                            h('div', { className: 'ar-hint ar-mono ar-cut', title: item.type === 'sqlite' ? item.file : `${item.host}:${item.port}/${item.database}` },
+                                item.type === 'sqlite' ? (item.file || ':memory:') : `${item.host}:${item.port}/${item.database}`),
+                            h('div', { className: 'ar-row', style: { flexWrap: 'wrap' } },
+                                h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '', onClick: () => dbTest(item) }, '测试'),
+                                h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '', onClick: () => setDbForm({
+                                    id: item.id, name: item.name, type: item.type, host: item.host,
+                                    port: item.port ? String(item.port) : '', database: item.database,
+                                    username: item.username, password: '', extraText: Object.keys(item.extra || {}).length ? JSON.stringify(item.extra, null, 2) : '',
+                                }) }, '编辑'),
+                                h('span', { className: 'ar-spacer' }),
+                                h('button', { className: 'ar-btn ghost danger', disabled: dbDbBusy !== '', onClick: () => dbDelete(item) }, '删除'))))),
+
+                    dbForm ? h(EditDbForm, { value: dbForm, onChange: setDbForm, onSave: dbSave, onCancel: () => setDbForm(null), busy: dbDbBusy }) : null)
+                    : null,
+
+                // ---- SQL ----
+                dbSection === 'sql' ? h('div', { className: 'ar-pane' },
+                    h('div', { className: 'ar-card' },
+                        h('div', { className: 'ar-hint' }, activeConn
+                            ? `当前连接：${activeConn.name}（${activeConn.type}）`
+                            : '先到「连接」里选一个连接'),
+                        h('textarea', {
+                            className: 'ar-ta ar-mono',
+                            value: dbSql,
+                            placeholder: 'SELECT * FROM table LIMIT 100',
+                            spellCheck: false,
+                            onChange: (e) => setDbSql(e.target.value),
+                            style: { minHeight: '90px' },
+                        }),
+                        h('div', { className: 'ar-row', style: { flexWrap: 'wrap' } },
+                            h('label', { className: 'ar-check' },
+                                h('input', { type: 'checkbox', checked: dbReadonly, onChange: (e) => setDbReadonly(e.target.checked) }),
+                                h('span', {}, '只读模式（拒绝写操作）')),
+                            h('span', { className: 'ar-spacer' }),
+                            h('button', { className: 'ar-btn primary', disabled: dbDbBusy !== '' || !dbActive, onClick: dbRun },
+                                dbDbBusy === 'query' ? '执行中…' : '执行')),
+                        dbReadonly ? null : h('div', { className: 'ar-hint', style: { color: 'var(--ar-warn)' } }, '只读模式已关闭：写操作会真实生效。')),
+
+                    dbResult ? h(DbResultCard, { result: dbResult, onClose: () => setDbResult(null) }) : null)
+                    : null,
+
+                // ---- 表结构 ----
+                dbSection === 'schema' ? h('div', { className: 'ar-pane' },
+                    h('div', { className: 'ar-row' },
+                        h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '' || !dbActive, onClick: () => loadDbTables(dbActive) }, '刷新表清单'),
+                        h('span', { className: 'ar-hint', style: { flex: '1 1 auto', minWidth: 0 } },
+                            dbTables.length > 0 ? `${dbTables.length} 个表` : '（未加载）')),
+                    dbTables.length === 0
+                        ? h('div', { className: 'ar-hint' }, dbActive ? '点「刷新表清单」查看这个库里的表。' : '先到「连接」里选一个连接。')
+                        : h('div', { className: 'ar-group' }, dbTables.map((item) => h('button', {
+                            key: item.name,
+                            className: 'ar-btn ghost ar-mono',
+                            style: { justifyContent: 'flex-start', width: '100%' },
+                            disabled: dbDbBusy !== '',
+                            onClick: () => dbDescribe(item.name),
+                        }, item.name))),
+                    dbTableDetail ? h(TableDetail, { detail: dbTableDetail, onClose: () => setDbTableDetail(null) }) : null)
+                    : null);
+
             return h('div', { className: 'ar-root' },
                 h('div', { className: 'ar-top' },
                     h('div', { className: 'ar-tabs' }, tabs.map((item) => h('button', {
@@ -1591,6 +2066,7 @@ window.__ModuleLoader__.load({
                     h(Banner, { kind: 'ok', text: error ? '' : notice, onClose: () => setNotice('') }),
                     tab === 'apis' ? apisPane : null,
                     tab === 'services' ? servicesPane : null,
+                    tab === 'db' ? dbPane : null,
                     tab === 'settings' ? settingsPane : null));
         }
 
@@ -1773,7 +2249,7 @@ window.__ModuleLoader__.load({
         }
 
         function apply(ctx) {
-            installStyles(ctx);
+            installStyles();
             const slots = typeof ctx.get === 'function' ? ctx.get('slots') : undefined;
             if (!slots || typeof slots.register !== 'function') return;
 

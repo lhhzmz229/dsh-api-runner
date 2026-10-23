@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConfigStore } from './config.js';
 import { callApi, pickPath } from './api.js';
+import { DbManager } from './db.js';
 import { JavaRunner } from './java-runner.js';
 import { discoverLogs, listJavaProcesses, readFileChunk, readFileTail } from './java.js';
 import { LogReader } from './log.js';
@@ -39,6 +40,12 @@ export class ApiRunnerService {
          */
         this.startBatches = new Map();
         this._batchSeq = 0;
+        /**
+         * 数据库连接管理。数据库能力从原 dsh-db-tool 合并进来，
+         * 但**不依赖任何 DSH 服务**（原插件把 betterSidebar 当硬依赖，
+         * 服务没就绪就一直 pending，拖垮整个 web 启动）。
+         */
+        this.dbManager = options.dbManager || new DbManager({ homeDir: this.homeDir, settingsStore: this.settingsStore });
     }
 
     /** 面板配置转成 YAML 同构的覆盖层；没有面板存储时返回 undefined */
@@ -1161,9 +1168,61 @@ export class ApiRunnerService {
         return { ok: true, message: `已取消关联 pid ${pid}` };
     }
 
+    // ---- 数据库（从 dsh-db-tool 合并进来的能力） ----
+    /**
+     * 数据库连接是**跨项目**的：同一套库通常被多个项目共用，
+     * 按项目归档反而每次换项目都要重配。所以这里不接 cwd 参数。
+     */
+    dbConnections() {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        try {
+            const connections = this.dbManager.listConnections();
+            return { ok: true, connections, total: connections.length };
+        } catch (error) {
+            return { ok: false, code: 'DB_ERROR', message: String(error?.message || error) };
+        }
+    }
+
+    async dbTest(target) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.testConnection(target);
+    }
+
+    dbSave(patch) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.saveConnection(patch);
+    }
+
+    dbDelete(id) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.deleteConnection(id);
+    }
+
+    async dbQuery(id, sql, params = [], options = {}) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.query(id, sql, params, options);
+    }
+
+    async dbDatabases(id) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.listDatabases(id);
+    }
+
+    async dbTables(id, database = '') {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.listTables(id, database);
+    }
+
+    async dbDescribeTable(id, table) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.describeTable(id, table);
+    }
+
     dispose() {
         this.logReader.dispose();
         this.serviceManager.dispose();
+        // 数据库连接池也要关，否则插件卸载后连接泄漏
+        if (this.dbManager) this.dbManager.dispose();
     }
 }
 

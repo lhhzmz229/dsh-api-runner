@@ -42,7 +42,7 @@ const PARAMETERS = {
     properties: {
         action: {
             type: 'string',
-            enum: ['describe', 'call', 'login', 'service', 'log', 'wait_log', 'reset_log', 'verify', 'java'],
+            enum: ['describe', 'call', 'login', 'service', 'log', 'wait_log', 'reset_log', 'verify', 'java', 'db'],
             description: '要执行的操作',
         },
         api_id: { type: 'string', description: '接口 id 或 name（call、login、verify 用）' },
@@ -69,6 +69,34 @@ const PARAMETERS = {
             items: { type: 'string' },
             description: 'java_action=start_all 时只启动这些服务（省略则启动全部已保存的）',
         },
+        db_action: {
+            type: 'string',
+            enum: ['list_connections', 'test', 'save', 'delete', 'query', 'list_databases', 'list_tables', 'describe_table'],
+            description: '数据库动作（action=db 用）：list_connections 列出连接；test 试连；save 保存连接；delete 删除连接；query 执行 SQL（只读模式默认开）；list_databases/list_tables/describe_table 看元数据',
+        },
+        connection_id: { type: 'string', description: '数据库连接 id（db_action=query/list_tables/describe_table/test/delete 用）' },
+        sql: { type: 'string', description: '要执行的 SQL（db_action=query 用，只允许单条语句）' },
+        params: {
+            type: 'object',
+            additionalProperties: true,
+            description: '接口参数（action=call/login）：键会替换 URL/body 里的 {key} 占位。db_action=query 时请改用 db_params。',
+        },
+        db_params: {
+            type: 'array',
+            items: {},
+            description: 'SQL 参数化占位值（db_action=query 用），按 ?/$1/:1 顺序绑定，不要拼字符串',
+        },
+        db_readonly: {
+            type: 'boolean',
+            description: 'db_action=query 时是否只读（默认 true，拒绝 INSERT/UPDATE/DELETE/DDL）',
+        },
+        connection: {
+            type: 'object',
+            additionalProperties: true,
+            description: '连接配置（db_action=save/test 用）：{ id?, name, type(sqlite|mysql|postgres|oracle), host, port, database, username, password, extra }',
+        },
+        table: { type: 'string', description: '表名（db_action=describe_table 用）' },
+        database: { type: 'string', description: '库名/模式名（db_action=list_tables 用；MySQL 必填）' },
         pid: { type: 'number', description: '要接管的 Java 进程 pid（java_action=start 用）' },
         java_id: { type: 'string', description: '插件托管的服务名或 pid（java_action=stop/restart/log/save/unsave/start_saved 用）' },
         port: { type: 'number', description: '服务端口（java_action=start 用；省略则从进程参数推断）' },
@@ -209,6 +237,64 @@ async function runTool(service, args, projectPath) {
                 return service.settings();
             }
             return { ok: false, code: 'BAD_ACTION', message: `不支持的 java_action: ${javaAction}` };
+        }
+        case 'db': {
+            const dbAction = String(args.db_action || 'list_connections');
+            if (dbAction === 'list_connections') return service.dbConnections();
+            if (dbAction === 'list_databases') {
+                if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=list_databases 需要 connection_id' };
+                return service.dbDatabases(String(args.connection_id));
+            }
+            if (dbAction === 'test') {
+                const target = args.connection || args.connection_id;
+                if (!target) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=test 需要 connection_id 或 connection 配置' };
+                return service.dbTest(args.connection ? asObject(args.connection) : String(args.connection_id));
+            }
+            if (dbAction === 'save') {
+                /**
+                 * connection 可能是对象，也可能被上游序列化成 JSON 字符串
+                 * （工具参数走 JSON 时常见）。两种都接住，不要只认对象。
+                 */
+                const raw = args.connection;
+                let config;
+                if (typeof raw === 'string' && raw.trim() !== '') {
+                    try {
+                        config = JSON.parse(raw);
+                    } catch {
+                        return { ok: false, code: 'BAD_ARGUMENT', message: 'connection 不是合法 JSON' };
+                    }
+                } else if (raw && typeof raw === 'object') {
+                    config = raw;
+                }
+                if (!config || typeof config !== 'object') {
+                    return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=save 需要 connection 配置（对象或 JSON 字符串）' };
+                }
+                return service.dbSave(asObject(config));
+            }
+            if (dbAction === 'delete') {
+                if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=delete 需要 connection_id' };
+                return service.dbDelete(String(args.connection_id));
+            }
+            if (dbAction === 'query') {
+                if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=query 需要 connection_id' };
+                if (!args.sql) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=query 需要 sql' };
+                return service.dbQuery(String(args.connection_id), String(args.sql), Array.isArray(args.db_params) ? args.db_params : [], {
+                    // 默认只读：模型直接执行写操作是高风险动作，必须显式关闭
+                    readonly: args.db_readonly !== false,
+                    maxRows: args.max_lines ? Number(args.max_lines) : undefined,
+                    timeoutMs,
+                });
+            }
+            if (dbAction === 'list_tables') {
+                if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=list_tables 需要 connection_id' };
+                return service.dbTables(String(args.connection_id), args.database ? String(args.database) : '');
+            }
+            if (dbAction === 'describe_table') {
+                if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=describe_table 需要 connection_id' };
+                if (!args.table) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=describe_table 需要 table' };
+                return service.dbDescribeTable(String(args.connection_id), String(args.table));
+            }
+            return { ok: false, code: 'BAD_ACTION', message: `不支持的 db_action: ${dbAction}` };
         }
         case 'service': {
             const serviceAction = String(args.service_action || 'status');
@@ -576,6 +662,56 @@ async function handleHttp(req, res, service, projectOf) {
     if (route === 'java/start-all/status' && req.method === 'GET') {
         return send(200, service.startBatchStatus(url.searchParams.get('batch') || ''));
     }
+
+    // ---- 数据库：连接管理与 SQL 执行（连接是跨项目的，不按 cwd 归档） ----
+    if (route === 'db' && req.method === 'GET') {
+        return send(200, service.dbConnections());
+    }
+    if (route === 'db/test' && req.method === 'POST') {
+        const body = await readBody();
+        const target = body.connection ? asObject(body.connection) : String(body.connection_id || body.id || '');
+        if (!target || (typeof target === 'string' && target === '')) {
+            return send(400, { ok: false, code: 'MISSING_ARGUMENT', message: '需要 connection_id 或 connection 配置' });
+        }
+        return send(200, await service.dbTest(target));
+    }
+    if (route === 'db/save' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, service.dbSave(asObject(body.connection || body)));
+    }
+    if (route === 'db/delete' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, service.dbDelete(String(body.connection_id || body.id || '')));
+    }
+    if (route === 'db/query' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, await service.dbQuery(
+            String(body.connection_id || ''),
+            String(body.sql || ''),
+            Array.isArray(body.params) ? body.params : [],
+            {
+                readonly: body.readonly !== false,
+                maxRows: body.max_rows ? Number(body.max_rows) : undefined,
+                timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
+            },
+        ));
+    }
+    if (route === 'db/databases' && req.method === 'GET') {
+        return send(200, await service.dbDatabases(String(url.searchParams.get('connection_id') || '')));
+    }
+    if (route === 'db/tables' && req.method === 'GET') {
+        return send(200, await service.dbTables(
+            String(url.searchParams.get('connection_id') || ''),
+            String(url.searchParams.get('database') || ''),
+        ));
+    }
+    if (route === 'db/table' && req.method === 'GET') {
+        return send(200, await service.dbDescribeTable(
+            String(url.searchParams.get('connection_id') || ''),
+            String(url.searchParams.get('name') || url.searchParams.get('table') || ''),
+        ));
+    }
+
     if (route === 'settings' && req.method === 'GET') {
         return send(200, service.settings());
     }

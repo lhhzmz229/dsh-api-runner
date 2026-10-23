@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.2.1`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.0`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,16 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.2.x 升级到 0.3.0
+
+0.3.0 新增数据库能力，**需要硬刷新页面**，且有两个注意点：
+
+1. **Node 版本要求提高到 `>=22.5`**（SQLite 用 Node 内置的 `node:sqlite`，22.5 起才有）。低版本 Node 上插件会加载失败，请先升级 Node。
+2. **面板多了一个「数据库」页签**，支持 SQLite / MySQL / PostgreSQL / Oracle / 达梦。SQLite 开箱即用（零依赖）；其它类型需要按需装驱动，见「数据库」章节。
+3. **面板 UI 重做**：顶部页签和一级标题改成胶囊分段控件，窄面板下横向滚动不换行。
+
+原 dsh-db-tool 用户可以卸载它了——数据库能力已合并进来，且不再依赖 `betterSidebar`（原插件把 `betterSidebar` 当硬依赖，服务未就绪时会卡住整个 web 启动）。
 
 ### 本地开发：link 安装
 
@@ -129,9 +139,10 @@ Windows 下 link 路径写成 `link:D:/path/to/dsh-api-runner` 也等价。
 
 - **DSH**：`>=0.1.0-rc.6 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`
 - **已验证环境**：DSH `0.2.1-alpha.1` / Windows
-- **Node.js**：`>=20`
+- **Node.js**：`>=22.5`（SQLite 用内置 `node:sqlite`，22.5 起才有）
 - **平台**：Windows / macOS / Linux（进程与端口发现按平台分流）
 - **可选环境**：JDK（`jps` / `jcmd`，用于 Java 服务发现与接管）、Maven（`mvn`，用于接管时编译）
+- **可选数据库驱动**：SQLite 用 Node 内置，无需安装；MySQL 需 `mysql2`、PostgreSQL 需 `pg`、Oracle 需 `oracledb`（原生模块）、达梦需 `dmdb`（纯 JS）。都是按需加载，不装只影响对应类型
 
 ## 配置
 
@@ -213,6 +224,7 @@ logs:
 | `call` | 按 `api_id` 调接口，`params` 传占位符；已保存 token 会自动注入 |
 | `login` | 调登录接口并把 token 存进项目档（`api_id` 指向配了 `login.tokenPath` 的接口） |
 | `java` | 本机 Java 服务：`java_action` = `list` / `detail`（详情+日志）/ `start`（接管启动）/ `stop` / `restart` / `log` / `ignore` / `unignore` / `save`（保存启动配方）/ `unsave` / `start_saved`（按配方启动，不需要 IDEA 里先有进程）/ `start_all`（一键启动所有已保存的服务，可用 `java_ids` 只启部分）/ `settings`（读或改全局设置）/ `status`，详见下文 |
+| `db` | 数据库：`db_action` = `list_connections` / `test` / `save` / `delete` / `query`（执行 SQL，**默认只读**）/ `list_databases` / `list_tables` / `describe_table`，详见下文 |
 | `service` | `service_action` = `start` / `stop` / `restart` / `wait` / `status` |
 | `log` | 增量读日志（`pattern` 正则过滤，`max_bytes` / `max_lines` 限流） |
 | `wait_log` | 等某个特征出现在日志里（`timeout_ms` 超时） |
@@ -332,6 +344,68 @@ apis:
 - **IDEA Run/Debug 按钮 + 不想被接管** → 配 `mode: observe`。模型调 `verify` 时不会杀进程，只等健康检查通过；需要重启时你在 IDEA 里点重启，模型调 `service action=wait` 等你起来。
 - **完全交给插件** → 配 `mode: managed`，`command` 写成 `mvnw.cmd spring-boot:run` 这类可拉起的命令。注意 IDEA 和插件不要同时占用同一个端口。
 
+## 数据库
+
+把数据库能力合并进来，替代原来的 `dsh-db-tool`。
+
+> **为什么合并**：原 `dsh-db-tool` 把 `betterSidebar` 当**硬依赖**（`inject` 里列出且没有兜底），服务没就绪就一直 `pending`，拖垮整个 web 启动（`web boot: 1 entry did not activate`）。本插件的数据库模块**不依赖任何 DSH 服务**，只依赖 Node 内置能力。
+
+### 支持的数据库
+
+| 类型 | 驱动 | 说明 |
+| --- | --- | --- |
+| `sqlite` | **Node 内置 `node:sqlite`** | 零依赖、零原生编译。填文件路径，或 `:memory:` 用内存库 |
+| `mysql` | `mysql2`（纯 JS） | 需要 `npm install mysql2` |
+| `postgres` | `pg`（纯 JS） | 需要 `npm install pg` |
+| `oracle` | `oracledb`（原生模块） | 需要 `npm install oracledb`，且要匹配 Node ABI |
+| `dm` | `dmdb`（纯 JS） | 达梦 DM8，需要 `npm install dmdb`。默认端口 5236 |
+
+驱动都是**按需动态加载**：没装某个驱动只会让那种类型的连接报「缺少 xx 依赖」，不会让整个插件加载失败。SQLite 开箱即用，不需要装任何东西。
+
+### 面板
+
+「数据库」子页（和「接口 / 服务 / 设置」并列）分三块：
+
+- **连接管理**：新增 / 编辑 / 删除 / 测试。密码框是 `type=password`，编辑时不回填，留空表示不修改。
+- **执行 SQL**：写 SQL → 点「执行」→ 结果表格（列头 + 行 + 行数/耗时）。**只读模式默认开启**，拒绝 INSERT/UPDATE/DELETE/DDL；关掉时会显示醒目提示。
+- **表结构**：选连接 → 刷新表清单 → 点表名看字段/类型/可空/默认值/主键/索引，同时自动把 `SELECT * FROM xxx LIMIT 100` 填进 SQL 框。
+
+### 模型调用
+
+```
+action=db, db_action=query, connection_id=<id>, sql="SELECT * FROM t WHERE id = ?", db_params=[7]
+```
+
+默认只读。要写数据必须显式传 `db_readonly=false`。
+
+```jsonc
+// 保存一个 SQLite 连接
+{ "action": "db", "db_action": "save",
+  "connection": { "name": "本地库", "type": "sqlite", "database": "D:\\data\\app.db" } }
+
+// 看表结构
+{ "action": "db", "db_action": "describe_table", "connection_id": "<id>", "table": "users" }
+```
+
+### 安全设计
+
+| 项 | 做法 |
+| --- | --- |
+| 密码存储 | AES-256-GCM 加密，密钥由机器特征派生。**落盘文件与任何返回值里都没有明文**，列表只给掩码 |
+| SQL 注入 | 一律参数化（`?` / `$1` / `:1`），`db_params` 传值，**不要拼字符串** |
+| 多语句 | 只允许单条。用「跳过字符串/注释」的扫描判断，所以 `WHERE note = 'a;b'` 不会被误判 |
+| 只读保护 | 默认开启，非 SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/PRAGMA 一律拒绝 |
+| 超时 | 默认 30s，超时报错而不是卡死 |
+| 结果集 | 默认上限 1000 行，超出截断并提示真实总行数 |
+| 错误信息 | 驱动异常会抹掉 `password=xxx` 和 `://user:pass@` 这类片段再返回 |
+
+### 已知限制
+
+- **SQLite 是同步驱动**（`node:sqlite` 的 `DatabaseSync`）：超大结果集会阻塞事件循环。行数上限（默认 1000）能挡住大部分场景。
+- **`oracledb` 是原生模块**：如果 Node ABI 不匹配会加载失败，此时该类型连接报错，但其它类型不受影响。确实需要时再单独装并验证。
+- **达梦（dmdb）已知问题**：连接失败后它自己的池清理会抛 `TypeError: ... reading 'log'`（未捕获异步异常）。插件已加防护拦掉这个精确签名，不会带崩宿主；但连接失败本身仍会正常报错。
+- 连接是**跨项目**的（不按 cwd 归档）：同一套库常被多个项目共用，按项目归档反而每次换项目都要重配。
+
 ## HTTP 接口
 
 除工具外，插件还注册了同源路由（需要 DSH 会话认证）：
@@ -359,6 +433,14 @@ apis:
 - `POST /dsh-api-runner/api/java/start-saved` → `{ id, compile?, port?, debug?, timeout_ms? }` 按配方启动
 - `POST /dsh-api-runner/api/java/start-all` → `{ ids?, compile?, restart?, timeout_ms? }` 一键启动（后台跑，立刻返回 `{ batchId, total }`；`ids` 省略即全部已保存的）
 - `GET /dsh-api-runner/api/java/start-all/status?batch=<batchId>` → 批次进度 `{ finished, done, total, current, items, result }`（`batch` 省略取最近一个）
+- `GET /dsh-api-runner/api/db` → 数据库连接列表（密码只给掩码）
+- `POST /dsh-api-runner/api/db/test` → `{ connection_id }` 或 `{ connection }` 试连
+- `POST /dsh-api-runner/api/db/save` → `{ connection }` 保存/更新连接
+- `POST /dsh-api-runner/api/db/delete` → `{ connection_id }` 删除连接
+- `POST /dsh-api-runner/api/db/query` → `{ connection_id, sql, params?, readonly?, max_rows?, timeout_ms? }` 执行 SQL
+- `GET /dsh-api-runner/api/db/databases?connection_id=` → 库清单
+- `GET /dsh-api-runner/api/db/tables?connection_id=&database=` → 表清单
+- `GET /dsh-api-runner/api/db/table?connection_id=&name=` → 表结构（字段 + 索引）
 - `GET /dsh-api-runner/api/java/log?id=<服务名>&from=<字节偏移>` → 插件启动服务的日志增量
 - `GET /dsh-api-runner/api/java/detail?id=<id 或 pid>&source=&from=&lines=&max_bytes=` → 服务详情 + 日志（含可选日志文件清单；不给 `from` 时按 `lines` 取末尾若干行）
 - `GET /dsh-api-runner/api/settings` → 全局设置（默认工作区、Maven 主路径、数据目录、生效目录）
