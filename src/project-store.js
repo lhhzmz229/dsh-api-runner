@@ -147,8 +147,24 @@ export class ProjectStore {
         const id = String(api.id || '').trim();
         if (!id) throw new Error('接口 id 不能为空');
         return this.update(cwd, (project) => {
+            const previous = project.apis.find((item) => String(item.id) === id);
             const list = project.apis.filter((item) => String(item.id) !== id);
-            list.push({ ...api, id, source: 'ui' });
+            /**
+             * 面板表单里没有的字段要沿用旧值，否则「保存」= 静默删数据。
+             *
+             * 面板只编辑 id/名称/方法/路径/baseUrl/说明/query/请求头/body/示例参数/token。
+             * 早期 query 不在表单里，于是「面板保存一次就把 YAML 里的 query 抹掉」。
+             *
+             * 关键语义：字段**存在**（哪怕是 {} / ''）表示用户明确设过，以新值为准；
+             * 字段**不存在**（undefined）才沿用旧值。这样用户也能把 query 清空。
+             */
+            const carried = {};
+            if (previous) {
+                for (const key of ['query', 'queryText', 'sampleText', 'sampleParams']) {
+                    if (api[key] === undefined && previous[key] !== undefined) carried[key] = previous[key];
+                }
+            }
+            list.push({ ...carried, ...api, id, source: 'ui' });
             project.apis = list;
         });
     }

@@ -409,7 +409,18 @@ export class ApiRunnerService {
                     /** 面板表单字段：面板自己存的原文优先，YAML 接口则从规整后的值反推 */
                     headersText: raw?.headersText ?? (Object.keys(api.headers || {}).length > 0 ? JSON.stringify(api.headers, null, 2) : ''),
                     bodyText: raw?.bodyText ?? (api.body === undefined ? '' : JSON.stringify(api.body, null, 2)),
-                    sampleText: raw?.sampleText ?? '',
+                    /**
+                     * 示例参数：面板存的是 sampleParams（解析后的对象），没有 sampleText 原文。
+                     * 所以取不到原文时必须从 sampleParams 反推，否则面板保存过一次后
+                     * 再点「编辑」，这个输入框永远是空的（用户填的内容看起来被吞了）。
+                     */
+                    sampleText: raw?.sampleText ?? (isPlainObject(api.sampleParams) && Object.keys(api.sampleParams).length > 0
+                        ? JSON.stringify(api.sampleParams, null, 2)
+                        : ''),
+                    /** query 原文：面板要能回显，否则保存时会把它丢掉（见 saveApi 的整体替换） */
+                    queryText: raw?.queryText ?? (isPlainObject(api.query) && Object.keys(api.query).length > 0
+                        ? JSON.stringify(api.query, null, 2)
+                        : ''),
                     params: collectParams(api),
                     /** 来自面板还是 YAML，面板里只允许删自己创建的 */
                     source: raw ? 'ui' : 'file',

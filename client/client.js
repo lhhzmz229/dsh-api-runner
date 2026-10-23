@@ -326,7 +326,7 @@ window.__ModuleLoader__.load({
         function emptyForm(baseUrl) {
             return {
                 id: '', name: '', method: 'GET', url: '', baseUrl: baseUrl || '', description: '',
-                headersText: '', bodyText: '', sampleText: '', useToken: '',
+                headersText: '', queryText: '', bodyText: '', sampleText: '', useToken: '',
                 isLogin: false, tokenPath: 'token', authHeader: 'Authorization', prefix: 'Bearer ',
                 timeoutMs: 30000,
             };
@@ -341,6 +341,7 @@ window.__ModuleLoader__.load({
                 baseUrl: api.baseUrl || '',
                 description: api.description || '',
                 headersText: api.headersText || '',
+                queryText: api.queryText || '',
                 bodyText: api.bodyText || '',
                 sampleText: api.sampleText || '',
                 useToken: api.useToken || '',
@@ -372,6 +373,9 @@ window.__ModuleLoader__.load({
                 else if (value && typeof value === 'object') Object.values(value).forEach(scan);
             };
             scan(api.url);
+            // query 里的占位符也要算：只写在 query 里的键，提示行不显示的话用户会以为漏了
+            scan(api.queryText);
+            if (api.query && typeof api.query === 'object') scan(api.query);
             scan(api.bodyText);
             return [...out];
         }
@@ -471,9 +475,15 @@ window.__ModuleLoader__.load({
                 h(Field, { label: '名称' }, h('input', { className: 'ar-in', value: value.name, placeholder: '显示名，留空则用 id', onChange: (e) => set('name', e.target.value) })),
                 h(Field, { label: '方法' }, h('select', { className: 'ar-sel', value: value.method, onChange: (e) => set('method', e.target.value) },
                     METHODS.map((m) => h('option', { key: m, value: m }, m)))),
-                h(Field, { label: '路径' }, h('input', { className: 'ar-in', value: value.url, placeholder: '/auth/login 或完整地址，支持 {id}', onChange: (e) => set('url', e.target.value) })),
+                h(Field, { label: '路径' }, h('input', { className: 'ar-in', value: value.url, placeholder: '/system/library/matter/billList，支持 {id}', onChange: (e) => set('url', e.target.value) })),
                 h(Field, { label: 'baseUrl' }, h('input', { className: 'ar-in', value: value.baseUrl, placeholder: '留空则用「设置」里的 baseUrl', onChange: (e) => set('baseUrl', e.target.value) })),
                 h(Field, { label: '说明' }, h('input', { className: 'ar-in', value: value.description, onChange: (e) => set('description', e.target.value) })),
+                h(Field, { label: 'query', top: true }, h('textarea', {
+                    className: 'ar-ta',
+                    value: value.queryText,
+                    placeholder: '查询参数（JSON），如 {"matterCd":"{matterCd}"}；不用把 ?a=b 写进「路径」',
+                    onChange: (e) => set('queryText', e.target.value),
+                })),
                 h(Field, { label: '请求头', top: true }, h('textarea', { className: 'ar-ta', value: value.headersText, placeholder: '{"X-Token":"${DEMO_TOKEN}"}', onChange: (e) => set('headersText', e.target.value) })),
                 h(Field, { label: 'body', top: true }, h('textarea', { className: 'ar-ta', value: value.bodyText, placeholder: '{"username":"{user}","password":"{pwd}"}', onChange: (e) => set('bodyText', e.target.value) })),
                 h(Field, { label: '示例参数', top: true }, h('textarea', { className: 'ar-ta', value: value.sampleText, placeholder: '「测试」按钮用它填 {占位}，如 {"user":"alice"}', onChange: (e) => set('sampleText', e.target.value) })),
@@ -1003,6 +1013,12 @@ window.__ModuleLoader__.load({
                         baseUrl: value.baseUrl.trim(),
                         description: value.description.trim(),
                         headers: parseJsonField(value.headersText, '请求头') || {},
+                        /**
+                         * query / sampleParams 用 `|| {}` 兜底：表单里清空时 parseJsonField 返回
+                         * undefined，这里显式给 {}，表示「用户明确清空了」，后端才会覆盖旧值；
+                         * 若传 undefined 会被当成「本次没提交」，旧值又会被沿用回来。
+                         */
+                        query: parseJsonField(value.queryText, 'query') || {},
                         body: parseJsonField(value.bodyText, 'body'),
                         sampleParams: parseJsonField(value.sampleText, '示例参数') || {},
                         useToken: value.useToken,

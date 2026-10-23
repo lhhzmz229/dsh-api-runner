@@ -289,6 +289,120 @@ await ok('面板接口的 tokenPath 会自动写回配置，第二次登录不�
     service.deleteApiUi(projectDir, 'ui-login');
 });
 
+console.log('面板回显与数据保留:');
+await ok('示例参数保存后能回显（不再永远空）', async () => {
+    service.saveApiUi(projectDir, {
+        id: 'ui-sample',
+        name: '回显示例参数',
+        method: 'GET',
+        url: `${base}/echo`,
+        sampleParams: { matterCd: 'SX-202609-0012', page: 1 },
+    });
+    const state = await service.uiState(projectDir);
+    const api = state.apis.find((item) => item.id === 'ui-sample');
+    assert.ok(api, '接口应出现在 uiState 里');
+    assert.notEqual(api.sampleText, '', 'sampleText 不能为空，否则编辑框回显不出来');
+    const parsed = JSON.parse(api.sampleText);
+    assert.equal(parsed.matterCd, 'SX-202609-0012');
+    assert.equal(parsed.page, 1);
+    service.deleteApiUi(projectDir, 'ui-sample');
+});
+
+await ok('YAML 里的 query 不会被面板保存抹掉', async () => {
+    // 先写进面板（模拟 YAML 已有该接口），再在面板里只改说明后保存
+    service.saveApiUi(projectDir, {
+        id: 'ui-query',
+        name: '带 query 的接口',
+        method: 'GET',
+        url: `${base}/system/library/matter/billList`,
+        query: { matterCd: '{matterCd}' },
+    });
+    const before = await service.uiState(projectDir);
+    const b = before.apis.find((item) => item.id === 'ui-query');
+    assert.ok(b.queryText && b.queryText.includes('matterCd'), 'uiState 应返回 queryText 供面板回显');
+
+    // 面板只改说明，不带 query 字段（真实表单就是这样提交的）
+    service.saveApiUi(projectDir, {
+        id: 'ui-query',
+        name: '带 query 的接口',
+        method: 'GET',
+        url: `${base}/system/library/matter/billList`,
+        description: '只改了说明',
+    });
+    const stored = service.projectStore.project(projectDir).apis.find((item) => item.id === 'ui-query');
+    assert.ok(stored.query && stored.query.matterCd === '{matterCd}', 'query 必须被保留，不能被整体覆盖丢掉');
+    assert.equal(stored.description, '只改了说明');
+
+    // 运行期确实用上了 query
+    const config = service.config(projectDir);
+    const runtime = config.config.apis.find((item) => item.id === 'ui-query');
+    assert.equal(runtime.query.matterCd, '{matterCd}');
+    service.deleteApiUi(projectDir, 'ui-query');
+});
+
+await ok('显式传 query 时以新值为准（不是只增不减）', async () => {
+    service.saveApiUi(projectDir, {
+        id: 'ui-query2',
+        name: 'q2',
+        method: 'GET',
+        url: `${base}/echo`,
+        query: { a: '1', b: '2' },
+    });
+    service.saveApiUi(projectDir, {
+        id: 'ui-query2',
+        name: 'q2',
+        method: 'GET',
+        url: `${base}/echo`,
+        query: { a: '9' },
+    });
+    const stored = service.projectStore.project(projectDir).apis.find((item) => item.id === 'ui-query2');
+    assert.deepEqual(stored.query, { a: '9' }, '显式提交的 query 应整体替换，不被旧值污染');
+    service.deleteApiUi(projectDir, 'ui-query2');
+});
+
+await ok('面板传空 query 能真正清空（不被旧值粘回来）', async () => {
+    service.saveApiUi(projectDir, {
+        id: 'ui-query3',
+        name: 'q3',
+        method: 'GET',
+        url: `${base}/echo`,
+        query: { a: '1' },
+    });
+    // 面板把输入框清空后提交的是 {}，必须覆盖成空
+    service.saveApiUi(projectDir, {
+        id: 'ui-query3',
+        name: 'q3',
+        method: 'GET',
+        url: `${base}/echo`,
+        query: {},
+    });
+    const stored = service.projectStore.project(projectDir).apis.find((item) => item.id === 'ui-query3');
+    assert.deepEqual(stored.query, {}, '清空 query 必须生效，否则用户没法去掉参数');
+    service.deleteApiUi(projectDir, 'ui-query3');
+});
+
+await ok('只改说明时示例参数也要保留（不能变成空）', async () => {
+    service.saveApiUi(projectDir, {
+        id: 'ui-sample2',
+        name: 's2',
+        method: 'GET',
+        url: `${base}/echo`,
+        sampleParams: { matterCd: 'SX-1' },
+    });
+    service.saveApiUi(projectDir, {
+        id: 'ui-sample2',
+        name: 's2',
+        method: 'GET',
+        url: `${base}/echo`,
+        description: '只改说明',
+    });
+    const state = await service.uiState(projectDir);
+    const api = state.apis.find((item) => item.id === 'ui-sample2');
+    assert.notEqual(api.sampleText, '', '只改说明不应把示例参数弄丢');
+    assert.equal(JSON.parse(api.sampleText).matterCd, 'SX-1');
+    service.deleteApiUi(projectDir, 'ui-sample2');
+});
+
 console.log('面板按项目分类:');
 const otherProjectDir = path.join(tmp, 'another-project');
 fs.mkdirSync(otherProjectDir, { recursive: true });
