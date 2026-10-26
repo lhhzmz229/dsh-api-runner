@@ -101,9 +101,11 @@ try {
 }
 
 console.log('');
-console.log('--- 4) import("dmdb") ---');
+console.log('--- 4) import("dmdb")（模拟插件用 ESM 加载）---');
 try {
-    const m = await import(pathToFileURL(path.join(dir, 'node_modules', 'dmdb', 'index.js')).href);
+    const require3 = createRequire(path.join(dir, 'package.json'));
+    const entryPath = require3.resolve('dmdb');
+    const m = await import(pathToFileURL(entryPath).href);
     console.log(`  ✓ 成功，导出项: ${Object.keys(m).join(', ')}`);
 } catch (e) {
     console.log(`  ✗ ${e.constructor.name}: ${String(e.message).split('\n')[0]}`);

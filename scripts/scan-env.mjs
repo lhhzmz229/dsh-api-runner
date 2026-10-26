@@ -1,10 +1,10 @@
 /**
  * dsh-api-runner 环境扫描（给另一台电脑用）
  *
- * 用法：把本文件保存成 scan.mjs，在任意目录执行：
- *     node scan.mjs
- * 或指定插件目录：
- *     node scan.mjs "C:\Users\xxx\.dsh\profiles\desktop\node_modules\dsh-api-runner"
+ * 用法：在任意目录执行：
+ *     node scripts/scan-env.mjs
+ * 或指定插件目录（把 <你的用户目录> 换成实际路径）：
+ *     node scripts/scan-env.mjs "<你的用户目录>/.dsh/profiles/desktop/node_modules/dsh-api-runner"
  *
  * 它只读，不改任何东西。把输出的整段文本发回即可。
  */

@@ -590,6 +590,22 @@ await ok('_loadDm 优先走 require，不经过 ESM 翻译层', async () => {
     assert.ok(mod, '_loadDm 应返回含 createPool 的模块');
 });
 
+await ok('_loadDm 多路径加载，任一条成功即返回可用模块', async () => {
+    let loaded;
+    try {
+        loaded = await manager._loadDm();
+    } catch (e) {
+        if (/找不到|Cannot find|加载 dmdb 失败/i.test(String(e.message))) return; // 没装则跳过
+        throw e;
+    }
+    const mod = [loaded?.dmdb, loaded?.default?.dmdb, loaded?.default, loaded]
+        .find((m) => m && typeof m.createPool === 'function');
+    assert.ok(mod, '_loadDm 应返回含 createPool 的模块');
+    assert.equal(typeof mod.parseUrl, 'function', '应能拿到 parseUrl');
+    // 不能是空对象
+    assert.ok(Object.keys(loaded || {}).length > 0, '不应返回空对象');
+});
+
 await ok('service 暴露数据库方法，且 dispose 关闭连接池', async () => {
     const service = new ApiRunnerService({ homeDir });
     const saved = service.dbSave({ name: '服务层库', type: 'sqlite', database: dbFile });

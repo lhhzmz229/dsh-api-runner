@@ -1350,6 +1350,26 @@ window.__ModuleLoader__.load({
             const [dbTesting, setDbTesting] = React.useState(false);
             /** 驱动自检结果（null = 没查过） */
             const [dbDiagnose, setDbDiagnose] = React.useState(null);
+            /**
+             * 一级标题胶囊容器。
+             *
+             * 之前用 ref 回调在每次渲染时调 scrollIntoView，导致「在表单里输入
+             * 一个字就滚回页面顶部」——因为输入触发重渲染，ref 回调就执行一次。
+             * 现在只在**切换页签**时滚（用 effect 盯 dbSection），平时不碰滚动。
+             */
+            const dbSegRef = React.useRef(null);
+            /**
+             * 只在一级标题切换时，把选中的胶囊滚进视野。
+             * 依赖只有 dbSection —— 输入内容变化不会触发它，页面就不会跳。
+             */
+            React.useEffect(() => {
+                const box = dbSegRef.current;
+                if (!box) return;
+                const active = box.querySelector('.ar-seg.on');
+                if (!active) return;
+                // 只滚容器内部，不滚整个页面（block: 'nearest' 是关键）
+                active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }, [dbSection]);
 
             const headers = React.useMemo(() => ({ 'Content-Type': 'application/json', 'x-dsh-session-id': sessionId }), [sessionId]);
             const get = React.useCallback(async (path) => {
@@ -2260,14 +2280,10 @@ window.__ModuleLoader__.load({
             const dbPane = h('div', { className: 'ar-pane' },
                 h(Banner, { kind: 'err', text: dbError, onClose: () => setDbError('') }),
 
-                h('div', { className: 'ar-segmented' }, dbSections.map((item) => h('button', {
+                h('div', { className: 'ar-segmented', ref: dbSegRef }, dbSections.map((item) => h('button', {
                     key: item.id,
                     className: item.id === dbSection ? 'ar-seg on' : 'ar-seg',
                     onClick: () => setDbSection(item.id),
-                    ref: (node) => {
-                        // 窄面板里胶囊会横向滚动，选中的那个必须自己滚进视野
-                        if (node && item.id === dbSection) node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                    },
                 }, item.label, item.count > 0 ? h('span', { className: 'n' }, item.count) : null))),
 
                 // ---- 连接 ----

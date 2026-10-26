@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isPlainObject, maskSecret, readStateNamespace, writeStateNamespace } from './util.js';
 
 /** 支持的数据库类型 */
@@ -785,24 +786,137 @@ export class DbManager {
      * 顺序：先 require（稳），失败再 import（万一某些环境下 require 不可用）。
      */
     async _loadDm() {
-        const require = createRequire(import.meta.url);
+        /**
+         * 加载 dmdb，按可靠性排序试多条路。
+         *
+         * 为什么不能只用一条：
+         *   用户机器上出现过「独立脚本 require('dmdb') 正常（55 个导出），
+         *   但插件在 DSH 宿主里拿到的是空对象」。原因是 DSH 用自带的 Node
+         *   （版本和系统 Node 不同），且插件的加载上下文（import.meta.url）
+         *   与独立脚本不同，模块解析基准不一样。
+         *
+         *   所以这里用**多个基准**分别试，并把每次的真实结果记下来。
+         *
+         * 另一个关键点：`require('dmdb')` 可能**返回 undefined 而不抛错**
+         * （index.js 是 `module.exports = require("./src/dm").dmdb`，
+         *   取不到就整体是 undefined）。这时如果直接走 import()，就会撞上
+         *   Node 的 ModuleWrap 对 undefined 调 hasOwnProperty，抛出与真实原因
+         *   无关的 `Cannot convert undefined or null to object`——用户报的就是这个。
+         *   所以「返回空」和「抛错」要同样处理：继续试下一条路。
+         */
+        const attempts = [];
+        const usable = (m) => m && typeof m === 'object'
+            && (typeof m.createPool === 'function'
+                || typeof m.dmdb?.createPool === 'function'
+                || typeof m.default?.createPool === 'function');
 
-        // 第一优先：CJS 原生加载，绕开 ESM 翻译层
+        // 构造多个 require 基准：插件自身位置、插件根目录、DSH 进程 cwd
+        const bases = [];
         try {
-            const loaded = require('dmdb');
-            if (loaded && typeof loaded === 'object') return loaded;
-        } catch (requireError) {
-            // 记录 require 的失败，供最终报错使用
-            this._dmRequireError = requireError;
+            bases.push({ label: 'import.meta.url', req: createRequire(import.meta.url) });
+        } catch { /* 忽略 */ }
+        try {
+            // 插件根目录：src/db.js → 上一级
+            const here = fileURLToPath(import.meta.url);
+            const pluginRoot = path.dirname(path.dirname(here));
+            bases.push({
+                label: `插件根目录(${pluginRoot})`,
+                req: createRequire(path.join(pluginRoot, 'package.json')),
+            });
+        } catch { /* 忽略 */ }
+        try {
+            bases.push({
+                label: `进程 cwd(${process.cwd()})`,
+                req: createRequire(path.join(process.cwd(), '__dsh_probe__.js')),
+            });
+        } catch { /* 忽略 */ }
+
+        // 1) 各基准下 require('dmdb')
+        for (const base of bases) {
+            try {
+                const loaded = base.req('dmdb');
+                if (usable(loaded)) return loaded;
+                attempts.push(`[${base.label}] require('dmdb') → ${loaded === undefined ? 'undefined' : `非可用对象(keys:${Object.keys(loaded || {}).length})`}`);
+            } catch (error) {
+                attempts.push(`[${base.label}] require('dmdb') 抛错：${error?.code || ''} ${String(error?.message || error).split('\n')[0]}`);
+            }
         }
 
-        // 回退：ESM import（某些打包/环境下只有这条路）
-        try {
-            return await import('dmdb');
-        } catch (importError) {
-            // 两条路都失败，报信息更全的那一条
-            throw this._dmLoadError(this._dmRequireError || importError, this._dmRequireError ? importError : null);
+        // 2) 绕开 index.js，直接取子模块的 .dmdb（index.js 那条链在某些环境下会断）
+        for (const base of bases) {
+            try {
+                const sub = base.req('dmdb/src/dm');
+                if (usable(sub?.dmdb)) return sub.dmdb;
+                attempts.push(`[${base.label}] require('dmdb/src/dm').dmdb → ${sub?.dmdb ? '非可用对象' : '不存在'}`);
+            } catch (error) {
+                attempts.push(`[${base.label}] require('dmdb/src/dm') 抛错：${error?.code || ''} ${String(error?.message || error).split('\n')[0]}`);
+            }
         }
+
+        // 3) ESM import（最后手段；在出问题的环境里它正是报 ModuleWrap 的那条路）
+        try {
+            const mod = await import('dmdb');
+            if (usable(mod)) return mod;
+            attempts.push(`import('dmdb') → 非可用对象(keys:${Object.keys(mod || {}).length})`);
+        } catch (error) {
+            attempts.push(`import('dmdb') 抛错：${error?.code || ''} ${String(error?.message || error).split('\n')[0]}`);
+        }
+
+        /**
+         * 4) 用解析到的**绝对路径**直接加载，彻底绕开模块解析。
+         *
+         * 用户机器上出现过「能解析到、但 require/import 拿到的都是空对象」，
+         * 而同一台机器上用独立脚本 require('dmdb') 是正常的（55 个导出）。
+         * 差别在模块解析上下文，所以这里直接拿 resolve() 出的文件路径加载，
+         * 不再经过包名解析。
+         */
+        for (const base of bases) {
+            let entry = '';
+            try {
+                entry = base.req.resolve('dmdb');
+            } catch {
+                continue;
+            }
+            // 4a. require 绝对路径
+            try {
+                const loaded = base.req(entry);
+                if (usable(loaded)) return loaded;
+                attempts.push(`[${base.label}] require(绝对路径) → keys:${Object.keys(loaded || {}).length}`);
+            } catch (error) {
+                attempts.push(`[${base.label}] require(绝对路径) 抛错：${String(error?.message || error).split('\n')[0]}`);
+            }
+            // 4b. import 绝对路径（file:// URL）
+            try {
+                const mod = await import(pathToFileURL(entry).href);
+                if (usable(mod)) return mod;
+                if (usable(mod?.default)) return mod.default;
+                attempts.push(`[${base.label}] import(绝对路径) → keys:${Object.keys(mod || {}).length}`);
+            } catch (error) {
+                attempts.push(`[${base.label}] import(绝对路径) 抛错：${String(error?.message || error).split('\n')[0]}`);
+            }
+            // 4c. 直接加载 src/dm.js（绕开 index.js 那一行）
+            const dmjs = path.join(path.dirname(entry), 'src', 'dm.js');
+            if (fs.existsSync(dmjs)) {
+                try {
+                    const sub = base.req(dmjs);
+                    if (usable(sub?.dmdb)) return sub.dmdb;
+                    attempts.push(`[${base.label}] require(src/dm.js).dmdb → ${sub?.dmdb ? '非可用对象' : '不存在'}`);
+                } catch (error) {
+                    attempts.push(`[${base.label}] require(src/dm.js) 抛错：${String(error?.message || error).split('\n')[0]}`);
+                }
+            }
+        }
+
+        // 全部失败：把每条路的真实结果都报出来，不再靠猜
+        const err = new Error(
+            '加载 dmdb 失败（已尝试多条路径）：\n  - ' + attempts.join('\n  - ')
+            + `\nNode：${process.version}`
+            + `\n插件：${import.meta.url}`
+            + '\n请把这段完整信息反馈给插件作者。',
+        );
+        err.code = 'DM_LOAD_FAILED';
+        err.attempts = attempts;
+        throw err;
     }
 
     /**

@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.5`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.6`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,25 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.5 升级到 0.3.6
+
+0.3.6 修了两件事：
+
+1. **dmdb 改成多路径加载**。有的环境里 `require('dmdb')` / `import('dmdb')` 会拿到
+   **空对象**（面板自检显示「导出项：空」），但同一台机器上用独立脚本 `require('dmdb')`
+   又是正常的——差别在模块解析上下文。现在依次尝试：
+   - 多个基准（`import.meta.url` / 插件根目录 / 进程 cwd）× `require('dmdb')`
+   - 同上 × `require('dmdb/src/dm')`（绕开 index.js 那一行）
+   - `import('dmdb')`
+   - 用 `resolve()` 出来的**绝对路径**直接 require / import
+   - 直接加载 `src/dm.js`
+
+   任何一条成功就用，全失败才报错，并把每条路径的真实结果都列出来。
+
+2. **修「在表单里输入一个字就滚回页面顶部」**。之前一级标题胶囊用 `ref` 回调调
+   `scrollIntoView`，而 ref 回调每次渲染都会执行——输入触发重渲染就滚一次。
+   现在只在切换页签时滚（effect 依赖只有 `dbSection`）。
 
 ### 从 0.3.4 升级到 0.3.5
 
