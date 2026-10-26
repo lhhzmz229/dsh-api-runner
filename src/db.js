@@ -771,21 +771,51 @@ export class DbManager {
      *   2. 进程级加一个 unhandledRejection 白名单过滤，只放行这个已知签名。
      */
     /**
-     * 把 import('dmdb') 的失败翻译成人能用的信息。
+     * 加载 dmdb，**优先用 require()**。
      *
-     * 为什么不能只看 error.message：
-     *   Node 把 CJS 转成 ESM 命名空间时，某些失败会被内部翻译层包一层，
-     *   message 变成 `Cannot convert undefined or null to object` 这种天书，
-     *   真正的错误藏在 stack 里。
+     * 为什么不直接用 import('dmdb')：
+     *   dmdb 是纯 CommonJS 包（index.js 就一行 `module.exports = require("./src/dm").dmdb`）。
+     *   Node 的 ESM loader 要把它转成命名空间对象，这个转换在某些环境下会崩在
+     *   `hasOwnProperty (<anonymous>)` / `ModuleWrap` 里，抛出与真实原因无关的
+     *   `Cannot convert undefined or null to object`——用户报的就是这个。
+     *
+     *   而 require() 走的是 CJS 原生路径，不经过 ESM 翻译层，能绕开这个问题。
+     *   插件本身是 ESM，所以用 createRequire 造一个 require。
+     *
+     * 顺序：先 require（稳），失败再 import（万一某些环境下 require 不可用）。
+     */
+    async _loadDm() {
+        const require = createRequire(import.meta.url);
+
+        // 第一优先：CJS 原生加载，绕开 ESM 翻译层
+        try {
+            const loaded = require('dmdb');
+            if (loaded && typeof loaded === 'object') return loaded;
+        } catch (requireError) {
+            // 记录 require 的失败，供最终报错使用
+            this._dmRequireError = requireError;
+        }
+
+        // 回退：ESM import（某些打包/环境下只有这条路）
+        try {
+            return await import('dmdb');
+        } catch (importError) {
+            // 两条路都失败，报信息更全的那一条
+            throw this._dmLoadError(this._dmRequireError || importError, this._dmRequireError ? importError : null);
+        }
+    }
+
+    /**
+     * 把 dmdb 加载失败翻译成人能用的信息。
      *
      * 判断依据用 error.code：
-     *   - ERR_MODULE_NOT_FOUND → 插件看不到这个包（pnpm 隔离 / 没装）
+     *   - ERR_MODULE_NOT_FOUND / MODULE_NOT_FOUND → 插件看不到这个包
      *   - 其它 → 包能定位到但加载时崩了
-     * 注意：**不要**在这里用 createRequire(import.meta.url).resolve() 判断，
-     * 它解析的是「当前文件所在位置」，和调用方的运行环境无关，
-     * 会永远返回「能解析到」，反而误导（踩过）。
+     *
+     * 注意：**不要**用 createRequire(import.meta.url).resolve() 判断「能不能找到」，
+     * 它解析的是「当前文件所在位置」，会永远返回能解析到，反而误导（踩过）。
      */
-    _dmLoadError(error) {
+    _dmLoadError(error, alsoError = null) {
         const code = String(error?.code || '');
         const rawMessage = String(error?.message || error).split('\n')[0];
         const stack = String(error?.stack || '');
@@ -799,39 +829,36 @@ export class DbManager {
             .slice(0, 3)
             .join(' ← ');
 
-        if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find (package|module)/i.test(rawMessage)) {
+        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND'
+            || /Cannot find (package|module)/i.test(rawMessage)) {
             return new Error(
                 `插件找不到 dmdb 包（${rawMessage}）。`
-                + `最可能的原因：pnpm 的依赖隔离让插件看不到它——在 profile 的 `
-                + `pnpm-workspace.yaml 里加一行 publicHoistPattern: [dmdb, mysql2, pg]，`
-                + `然后重装插件并重启 DSH。`
-                + `也可以到「数据库 → 连接管理 → 驱动自检」看每个驱动的解析路径。`,
+                + `先确认它装没装：到「数据库 → 连接管理 → 驱动自检」看解析路径。`
+                + `如果显示「解析不到」而目录里确实有，多半是 pnpm 依赖隔离——`
+                + `在 profile 的 pnpm-workspace.yaml 里加 publicHoistPattern: [dmdb, mysql2, pg]，`
+                + `然后重装插件并重启 DSH。`,
             );
         }
 
+        const second = alsoError ? `；import 也失败：${String(alsoError?.message || alsoError).split('\n')[0]}` : '';
         return new Error(
             `dmdb 已安装但加载时抛异常（不是缺包，装它没用）。原始错误：${rawMessage}`
             + (frames ? `；出错位置：${frames}` : '')
-            + `。排查：1) 确认 dmdb 目录完整；2) 删掉它后重新安装；`
-            + `3) 若仍失败，把这段信息反馈给插件作者。`,
+            + second
+            + `。这是 Node 的 CommonJS/ESM 转换层的问题，插件已改用 require() 加载；`
+            + `若仍失败，请把这段信息反馈给插件作者。`,
         );
     }
 
     async _openDm(config) {
-        let dmdb;
-        try {
-            dmdb = await import('dmdb');
-        } catch (error) {
-            throw this._dmLoadError(error);
-        }
+        const dmdb = await this._loadDm();
 
         /**
          * dmdb 的导出结构在不同版本/打包方式下不一致：
          * 有 `default`、有具名 `dmdb`、也有直接挂在模块上的。
-         * 逐个尝试，找不到就明确说清楚，而不是让它变成
-         * `Cannot convert undefined or null to object` 这种天书。
+         * 逐个尝试，找不到就明确说清楚。
          */
-        const candidates = [dmdb?.default, dmdb?.dmdb, dmdb?.default?.dmdb, dmdb];
+        const candidates = [dmdb?.dmdb, dmdb?.default?.dmdb, dmdb?.default, dmdb];
         const mod = candidates.find((m) => m && typeof m.createPool === 'function');
         if (!mod) {
             const keys = Object.keys(dmdb || {}).slice(0, 12).join(', ');
@@ -1158,10 +1185,17 @@ export class DbManager {
                 continue;
             }
 
-            // 能解析到，再看能不能真的加载
+            // 能解析到，再看能不能真的加载。
+            // 用 require 优先：和 _loadDm 保持一致，避免「自检说可用、实际用不了」
+            // 这种因加载方式不同导致的假象。
             try {
-                const mod = await import(item.name);
-                const real = [mod?.default, mod?.dmdb, mod?.default?.dmdb, mod]
+                let mod;
+                try {
+                    mod = require(item.name);
+                } catch {
+                    mod = await import(item.name);
+                }
+                const real = [mod?.dmdb, mod?.default?.dmdb, mod?.default, mod]
                     .find((m) => m && (typeof m.createPool === 'function' || typeof m.Pool === 'function' || typeof m.createConnection === 'function'));
                 let version = '';
                 try {

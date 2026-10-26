@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.4`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.5`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,22 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.4 升级到 0.3.5
+
+0.3.5 修掉了达梦驱动的**真实加载失败**：
+
+**症状**：驱动自检显示「能找到（路径是对的）但加载抛异常：Cannot convert undefined or null to object」，
+出错位置在 `hasOwnProperty (<anonymous>)` / `ModuleWrap`。
+
+**根因**：`dmdb` 是纯 CommonJS 包（`index.js` 只有一行 `module.exports = require("./src/dm").dmdb`）。
+插件是 ESM，用 `import('dmdb')` 加载时，Node 要把它转成 ESM 命名空间对象，
+这个转换在某些环境下会崩，抛出的还是与真实原因无关的错误。
+
+**修复**：改用 `require()` 加载（通过 `createRequire`），走 CJS 原生路径，绕开 ESM 翻译层。
+失败时才回退到 `import()`。
+
+这不是 pnpm 隔离问题——自检里能看到完整路径就说明包是可见的。
 
 ### 从 0.3.3 升级到 0.3.4
 
@@ -626,6 +642,11 @@ node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.
 **为什么错误信息会说「不是缺包，装它没用」？**
 因为如果包真的不在，报的是 `Cannot find package`；而「能找到但加载崩」是另一类问题，
 再去 `npm install` 一遍不会解决。0.3.4 起会明确区分这两种，并给出对应解法。
+
+**自检显示「能找到（有完整路径）但加载抛异常」？**
+说明包是可见的，问题在加载方式。0.3.5 起改用 `require()` 加载 CJS 驱动（绕开 Node 的
+CJS→ESM 翻译层），已修复「`Cannot convert undefined or null to object` / `hasOwnProperty`
+/ `ModuleWrap`」这类错误。升级到 0.3.5 即可。
 
 **`ApiRunner { action: 'java', java_action: 'list' }` 返回空列表？**
 服务发现依赖 `jps`（优先 `JAVA_HOME/bin/jps`，其次 PATH）。没有 JDK 时列表为空并给出提示；有 JDK 仍为空，检查目标服务是否用标准启动器起的。

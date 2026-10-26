@@ -559,6 +559,37 @@ await ok('dmdb 加载失败的错误分类正确', () => {
     assert.ok(/index\.js/.test(e2), '应给出出错位置');
 });
 
+await ok('dmdb 用 require 加载（绕开 CJS→ESM 翻译层）', async () => {
+    let dmdbMod;
+    try {
+        const { createRequire } = await import('node:module');
+        const require = createRequire(pathToFileURL(path.join(root, 'src', 'db.js')).href);
+        dmdbMod = require('dmdb');
+    } catch {
+        return; // 没装 dmdb 的机器跳过
+    }
+    assert.ok(dmdbMod, 'require 应能拿到模块');
+    const mod = [dmdbMod?.dmdb, dmdbMod?.default?.dmdb, dmdbMod?.default, dmdbMod]
+        .find((m) => m && typeof m.createPool === 'function');
+    assert.ok(mod, `require 拿到的对象应含 createPool。keys: ${Object.keys(dmdbMod || {}).slice(0, 10).join(', ')}`);
+    assert.equal(typeof mod.parseUrl, 'function', '应有 parseUrl');
+});
+
+await ok('_loadDm 优先走 require，不经过 ESM 翻译层', async () => {
+    // 直接调私有方法，确认能加载出可用模块
+    let loaded;
+    try {
+        loaded = await manager._loadDm();
+    } catch (e) {
+        // 没装 dmdb 的机器跳过
+        if (/找不到|Cannot find/i.test(String(e.message))) return;
+        throw e;
+    }
+    const mod = [loaded?.dmdb, loaded?.default?.dmdb, loaded?.default, loaded]
+        .find((m) => m && typeof m.createPool === 'function');
+    assert.ok(mod, '_loadDm 应返回含 createPool 的模块');
+});
+
 await ok('service 暴露数据库方法，且 dispose 关闭连接池', async () => {
     const service = new ApiRunnerService({ homeDir });
     const saved = service.dbSave({ name: '服务层库', type: 'sqlite', database: dbFile });
