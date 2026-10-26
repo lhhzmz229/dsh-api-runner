@@ -18,6 +18,7 @@
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { isPlainObject, maskSecret, readStateNamespace, writeStateNamespace } from './util.js';
@@ -769,41 +770,59 @@ export class DbManager {
      *   1. 连接失败时主动兜住这个异常；
      *   2. 进程级加一个 unhandledRejection 白名单过滤，只放行这个已知签名。
      */
+    /**
+     * 把 import('dmdb') 的失败翻译成人能用的信息。
+     *
+     * 为什么不能只看 error.message：
+     *   Node 把 CJS 转成 ESM 命名空间时，某些失败会被内部翻译层包一层，
+     *   message 变成 `Cannot convert undefined or null to object` 这种天书，
+     *   真正的错误藏在 stack 里。
+     *
+     * 判断依据用 error.code：
+     *   - ERR_MODULE_NOT_FOUND → 插件看不到这个包（pnpm 隔离 / 没装）
+     *   - 其它 → 包能定位到但加载时崩了
+     * 注意：**不要**在这里用 createRequire(import.meta.url).resolve() 判断，
+     * 它解析的是「当前文件所在位置」，和调用方的运行环境无关，
+     * 会永远返回「能解析到」，反而误导（踩过）。
+     */
+    _dmLoadError(error) {
+        const code = String(error?.code || '');
+        const rawMessage = String(error?.message || error).split('\n')[0];
+        const stack = String(error?.stack || '');
+
+        // 从 stack 里捞出真正出错的位置（跳过我们自己的帧）
+        const frames = stack
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith('at '))
+            .filter((line) => !/db\.js|db\.mjs/.test(line))
+            .slice(0, 3)
+            .join(' ← ');
+
+        if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find (package|module)/i.test(rawMessage)) {
+            return new Error(
+                `插件找不到 dmdb 包（${rawMessage}）。`
+                + `最可能的原因：pnpm 的依赖隔离让插件看不到它——在 profile 的 `
+                + `pnpm-workspace.yaml 里加一行 publicHoistPattern: [dmdb, mysql2, pg]，`
+                + `然后重装插件并重启 DSH。`
+                + `也可以到「数据库 → 连接管理 → 驱动自检」看每个驱动的解析路径。`,
+            );
+        }
+
+        return new Error(
+            `dmdb 已安装但加载时抛异常（不是缺包，装它没用）。原始错误：${rawMessage}`
+            + (frames ? `；出错位置：${frames}` : '')
+            + `。排查：1) 确认 dmdb 目录完整；2) 删掉它后重新安装；`
+            + `3) 若仍失败，把这段信息反馈给插件作者。`,
+        );
+    }
+
     async _openDm(config) {
         let dmdb;
         try {
             dmdb = await import('dmdb');
         } catch (error) {
-            /**
-             * import 失败有两种，必须分开说，否则用户按「缺依赖」去装包可能白装：
-             *
-             *   1. ERR_MODULE_NOT_FOUND —— 真的没装。给出安装命令。
-             *   2. 其它错误 —— 包装了但加载时抛异常（依赖损坏、Node 版本不兼容、
-             *      或它内部某个初始化挂了）。这时「去装 dmdb」是没用的，
-             *      要告诉用户真实原因和排查方法。
-             */
-            const code = error?.code || '';
-            const detail = String(error?.message || error);
-            if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package/i.test(detail)) {
-                throw new Error(
-                    `缺少 dmdb 依赖。请在该插件目录执行 npm install dmdb，`
-                    + `或改用 npm 安装插件（会自动带依赖）：${detail}`,
-                );
-            }
-            // 包装了但加载失败：把堆栈前几行带出来，便于定位是哪一行挂的
-            const stackTop = String(error?.stack || '')
-                .split('\n')
-                .slice(1, 4)
-                .map((line) => line.trim())
-                .filter(Boolean)
-                .join(' ← ');
-            throw new Error(
-                `dmdb 已安装但加载失败（不是缺包，装它没用）。`
-                + `原始错误：${detail}`
-                + (stackTop ? `；位置：${stackTop}` : '')
-                + `。常见原因：dmdb 版本与当前 Node 不兼容，或它的依赖装坏了——`
-                + `在该插件目录删掉 node_modules/dmdb 后重新 npm install dmdb。`,
-            );
+            throw this._dmLoadError(error);
         }
 
         /**
@@ -1093,6 +1112,8 @@ export class DbManager {
             { name: 'dmdb', label: '达梦' },
         ];
         const out = [];
+        const require = createRequire(import.meta.url);
+
         for (const item of checks) {
             if (item.builtin) {
                 let ok = false;
@@ -1104,38 +1125,69 @@ export class DbManager {
                 } catch (error) {
                     detail = `Node ${process.versions.node} 不支持 node:sqlite（需要 >=22.5）：${error.message}`;
                 }
-                out.push({ name: item.name, label: item.label, installed: ok, ok, version: '', detail });
+                out.push({ name: item.name, label: item.label, installed: ok, ok, version: '', path: '', detail });
                 continue;
             }
+
+            /**
+             * 先 resolve 再 import。
+             * resolve 能明确回答「插件能不能看到这个包、看到的是哪个文件」——
+             * 这正是 pnpm 隔离类问题最需要的信息。只看 import 的报错会被
+             * Node 内部翻译层包装，容易误判（踩过）。
+             */
+            let resolvedPath = '';
+            let resolveError = '';
             try {
-                const mod = await import(item.name);
-                // 找到真正带 API 的那个导出
-                const real = [mod?.default, mod?.dmdb, mod?.default?.dmdb, mod]
-                    .find((m) => m && (typeof m.createPool === 'function' || typeof m.Pool === 'function' || typeof m.createConnection === 'function'));
-                let version = '';
-                try {
-                    version = String(mod?.default?.version || mod?.version || '');
-                } catch { /* 有的包不暴露 version */ }
-                out.push({
-                    name: item.name,
-                    label: item.label,
-                    installed: true,
-                    ok: Boolean(real),
-                    version,
-                    detail: real ? '可用' : `已安装但结构异常（导出项：${Object.keys(mod || {}).slice(0, 8).join(', ') || '空'}）`,
-                });
+                resolvedPath = require.resolve(item.name);
             } catch (error) {
-                const code = error?.code || '';
-                const missing = code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package/i.test(String(error?.message));
+                resolveError = `${error?.code || ''} ${String(error?.message || error).split('\n')[0]}`.trim();
+            }
+
+            if (resolvedPath === '') {
                 out.push({
                     name: item.name,
                     label: item.label,
                     installed: false,
                     ok: false,
                     version: '',
-                    detail: missing
-                        ? '未安装（在该插件目录执行 npm install 即可）'
-                        : `已安装但加载失败：${error?.message || error}`,
+                    path: '',
+                    detail: `插件解析不到这个包（${resolveError || '未知原因'}）。`
+                        + `若确认装过，多半是 pnpm 依赖隔离——在 profile 的 pnpm-workspace.yaml 里加 `
+                        + `publicHoistPattern: [dmdb, mysql2, pg] 后重装插件。`,
+                });
+                continue;
+            }
+
+            // 能解析到，再看能不能真的加载
+            try {
+                const mod = await import(item.name);
+                const real = [mod?.default, mod?.dmdb, mod?.default?.dmdb, mod]
+                    .find((m) => m && (typeof m.createPool === 'function' || typeof m.Pool === 'function' || typeof m.createConnection === 'function'));
+                let version = '';
+                try {
+                    const meta = require(resolvedPath.replace(/[\\/]index\.js$/, '') + '/package.json');
+                    version = String(meta?.version || '');
+                } catch { /* 有的包结构不同 */ }
+                out.push({
+                    name: item.name,
+                    label: item.label,
+                    installed: true,
+                    ok: Boolean(real),
+                    version,
+                    path: resolvedPath,
+                    detail: real
+                        ? '可用'
+                        : `能解析到但导出结构异常（导出项：${Object.keys(mod || {}).slice(0, 8).join(', ') || '空'}）`,
+                });
+            } catch (error) {
+                out.push({
+                    name: item.name,
+                    label: item.label,
+                    installed: true,
+                    ok: false,
+                    version: '',
+                    path: resolvedPath,
+                    detail: `能找到（${resolvedPath}）但加载抛异常：${String(error?.message || error).split('\n')[0]}`,
                 });
             }
         }

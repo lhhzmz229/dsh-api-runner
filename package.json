@@ -1,6 +1,6 @@
 {
   "name": "dsh-api-runner",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "DSH 插件：按配置调用后端 HTTP 接口、启停/重启本地开发服务、增量读取日志并等待日志特征，让模型能\"改完自己验\"。",
   "type": "module",
   "license": "MIT",

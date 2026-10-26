@@ -529,6 +529,36 @@ await ok('驱动自检不会泄漏密码或连接串', async () => {
     manager.deleteConnection(saved.connection.id);
 });
 
+await ok('驱动自检报告解析路径（定位 pnpm 隔离问题的关键）', async () => {
+    const r = await manager.diagnose();
+    const dm = r.drivers.find((d) => d.name === 'dmdb');
+    assert.ok(dm, '应有 dmdb 一项');
+    // 装了就要给出实际路径，没装就给出解析失败原因
+    if (dm.installed) {
+        assert.ok(String(dm.path || '').length > 0, `装上了就应给出解析路径，实际：${JSON.stringify(dm)}`);
+        assert.ok(dm.path.includes('dmdb'), `路径应包含 dmdb：${dm.path}`);
+    } else {
+        assert.ok(/解析不到|publicHoistPattern/.test(dm.detail), `未装时应说明原因并给出建议：${dm.detail}`);
+    }
+});
+
+await ok('dmdb 加载失败的错误分类正确', () => {
+    // 场景 1：包找不到 → 应指引 pnpm 隔离，而不是让用户去装包
+    const notFound = Object.assign(new Error('Cannot find package dmdb'), { code: 'ERR_MODULE_NOT_FOUND' });
+    const e1 = manager._dmLoadError(notFound).message;
+    assert.ok(/找不到|解析不到/.test(e1), `应说明找不到：${e1}`);
+    assert.ok(/publicHoistPattern/.test(e1), `应给出 pnpm 隔离的解法：${e1}`);
+    assert.equal(/不是缺包/.test(e1), false, '找不到时不该说「不是缺包」');
+
+    // 场景 2：能加载但崩了 → 应说明不是缺包
+    const broken = new Error('boom inside module');
+    broken.stack = 'Error: boom inside module\n    at Object.<anonymous> (/x/dmdb/index.js:1:1)';
+    const e2 = manager._dmLoadError(broken).message;
+    assert.ok(/不是缺包/.test(e2), `加载崩了应说明不是缺包：${e2}`);
+    assert.ok(/boom inside module/.test(e2), '应带上原始错误');
+    assert.ok(/index\.js/.test(e2), '应给出出错位置');
+});
+
 await ok('service 暴露数据库方法，且 dispose 关闭连接池', async () => {
     const service = new ApiRunnerService({ homeDir });
     const saved = service.dbSave({ name: '服务层库', type: 'sqlite', database: dbFile });

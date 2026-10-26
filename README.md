@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.3`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.4`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,18 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.3 升级到 0.3.4
+
+0.3.4 修正了 0.3.3 驱动自检和错误信息里的**误判**：
+
+1. **错误分类改用 `error.code`**。之前靠 `error.message` 猜测，但 Node 把 CJS 转成 ESM
+   时会把真实错误包装成 `Cannot convert undefined or null to object`，导致把
+   「包找不到」误判成「包坏了」。
+2. **驱动自检现在报告解析路径**。`createRequire().resolve()` 能明确回答
+   「插件能不能看到这个包、看到的是哪个文件」——这正是 pnpm 依赖隔离类问题最需要的信息。
+3. **README 新增排查章节**：驱动「解析不到」vs「能找到但加载崩」两种情况的处理办法，
+   以及 pnpm 用户需要的 `publicHoistPattern` 配置。
 
 ### 从 0.3.2 升级到 0.3.3
 
@@ -580,6 +592,40 @@ node scripts/stage.mjs     # 复制 src/ → build/vN/，并改写 cordis.patch.
 
 **别人装上却报「找不到入口 / build/vN/main.js 不存在」？**
 仓库里的 `cordis.patch.yml` 被 `scripts/stage.mjs` 写成了本机 `file://` 路径。提交前跑 `node scripts/stage.mjs --release` 改回包名，再提交。
+
+**达梦/MySQL/PostgreSQL 报「找不到驱动包」或「已安装但加载失败」？**
+
+先点「数据库 → 连接管理 → 驱动自检」，它会列出每个驱动的**解析路径**和状态：
+
+```
+✓ 达梦    dmdb    v1.0.52452
+    path: ...\node_modules\.pnpm\dmdb@1.0.52452\node_modules\dmdb\index.js
+    可用
+- MySQL   mysql2
+    插件解析不到这个包（MODULE_NOT_FOUND ...）
+```
+
+分两种情况：
+
+1. **「解析不到」** —— 包装了但插件看不到它。DSH 用 pnpm 安装插件，pnpm 的依赖隔离
+   可能不把 `optionalDependencies` 链接到插件能访问的位置。在 profile 的
+   `pnpm-workspace.yaml` 里加：
+
+   ```yaml
+   publicHoistPattern:
+     - dmdb
+     - mysql2
+     - pg
+   ```
+
+   然后重装插件、重启 DSH。
+
+2. **「能找到但加载抛异常」** —— 包在，但内容或它自己的依赖有问题。
+   删掉该目录后重新安装。错误信息里会带上出错的文件位置。
+
+**为什么错误信息会说「不是缺包，装它没用」？**
+因为如果包真的不在，报的是 `Cannot find package`；而「能找到但加载崩」是另一类问题，
+再去 `npm install` 一遍不会解决。0.3.4 起会明确区分这两种，并给出对应解法。
 
 **`ApiRunner { action: 'java', java_action: 'list' }` 返回空列表？**
 服务发现依赖 `jps`（优先 `JAVA_HOME/bin/jps`，其次 PATH）。没有 JDK 时列表为空并给出提示；有 JDK 仍为空，检查目标服务是否用标准启动器起的。
