@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.1`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.2`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,23 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.1 升级到 0.3.2
+
+0.3.2 修了一个**让达梦/MySQL/PostgreSQL 完全不可用**的发布缺陷：
+
+**0.3.1 的 `package.json` 里没有声明数据库驱动**（只有 `yaml`）。装上 0.3.1 后，
+`node_modules` 里没有 `dmdb` / `mysql2` / `pg`，所有非 SQLite 连接都会报
+「缺少 xxx 依赖」。现在它们进了 `optionalDependencies`，装上就能用。
+
+如果你已经在 0.3.1 上手动 `npm install dmdb` 了，升级后不用再手动装。
+
+其它改进：
+- **错误信息不再误导**：以前 `createPool` 调用出错也会被说成「缺少 dmdb 依赖」，
+  现在区分「导入失败」和「驱动结构不可识别」。
+- **兼容多种 dmdb 导出结构**（`default` / `dmdb` / `default.dmdb` / 模块本身）。
+- **发布前自动做干净安装检查**：新增 `scripts/check-deps.mjs`，在临时目录用真实的
+  `npm install` 验证依赖齐全，并反向扫描代码里 import 的驱动有没有漏声明。
 
 ### 从 0.3.0 升级到 0.3.1
 

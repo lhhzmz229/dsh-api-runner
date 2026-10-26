@@ -271,6 +271,45 @@ await ok('DB_TYPES 包含 dm 与 oracle', async () => {
     assert.ok(DB_TYPES.includes('postgres'));
 });
 
+await ok('dmdb 导出结构能被识别（兼容 default/dmdb/模块本身）', async () => {
+    let dmdbMod;
+    try {
+        dmdbMod = await import('dmdb');
+    } catch {
+        // 没装 dmdb 的机器跳过，不算失败
+        return;
+    }
+    // 复刻 _openDm 里的候选查找逻辑
+    const candidates = [dmdbMod?.default, dmdbMod?.dmdb, dmdbMod?.default?.dmdb, dmdbMod];
+    const mod = candidates.find((m) => m && typeof m.createPool === 'function');
+    assert.ok(mod, `dmdb 已安装但找不到 createPool。导出项：${Object.keys(dmdbMod || {}).join(', ')}`);
+    assert.equal(typeof mod.parseUrl, 'function', '应能拿到 parseUrl');
+});
+
+await ok('dmdb 的 URL 解析：密码含 @ 不会被截断', async () => {
+    let dmdbMod;
+    try {
+        dmdbMod = await import('dmdb');
+    } catch {
+        return;
+    }
+    const candidates = [dmdbMod?.default, dmdbMod?.dmdb, dmdbMod?.default?.dmdb, dmdbMod];
+    const mod = candidates.find((m) => m && typeof m.parseUrl === 'function');
+    if (!mod) return;
+
+    // 未编码：dmdb 按最后一个 @ 分割，密码里的 @ 不会被误判
+    const raw = await mod.parseUrl('dm://FUND:Rgzn@2025@localhost:5236');
+    const getRaw = (k) => (typeof raw.getAny === 'function' ? raw.getAny(k) : raw[k]);
+    assert.equal(getRaw('password'), 'Rgzn@2025', '未编码时密码应完整');
+    assert.equal(getRaw('host'), 'localhost', '未编码时 host 应正确');
+
+    // 编码形式：也应正确解码
+    const enc = await mod.parseUrl('dm://FUND:Rgzn%402025@localhost:5236');
+    const getEnc = (k) => (typeof enc.getAny === 'function' ? enc.getAny(k) : enc[k]);
+    assert.equal(getEnc('password'), 'Rgzn@2025', '编码形式应自动解码');
+    assert.equal(getEnc('host'), 'localhost');
+});
+
 await ok('缺少 dmdb 驱动时给出可操作的提示，不崩', async () => {
     const saved = manager.saveConnection({
         name: '达梦无驱动',

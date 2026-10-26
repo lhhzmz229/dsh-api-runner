@@ -774,9 +774,30 @@ export class DbManager {
         try {
             dmdb = await import('dmdb');
         } catch (error) {
+            /**
+             * 只在这里报「缺依赖」——这里才是真正的导入失败。
+             * 之前把整个建池过程包在同一个 try 里，导致 createPool 调用出错
+             * （比如模块结构不对）也被说成「缺少 dmdb 依赖」，误导排查方向。
+             */
             throw new Error(`缺少 dmdb 依赖：请在该插件目录执行 npm install dmdb（${error?.message || error}）`);
         }
-        const mod = dmdb.default || dmdb;
+
+        /**
+         * dmdb 的导出结构在不同版本/打包方式下不一致：
+         * 有 `default`、有具名 `dmdb`、也有直接挂在模块上的。
+         * 逐个尝试，找不到就明确说清楚，而不是让它变成
+         * `Cannot convert undefined or null to object` 这种天书。
+         */
+        const candidates = [dmdb?.default, dmdb?.dmdb, dmdb?.default?.dmdb, dmdb];
+        const mod = candidates.find((m) => m && typeof m.createPool === 'function');
+        if (!mod) {
+            const keys = Object.keys(dmdb || {}).slice(0, 12).join(', ');
+            throw new Error(
+                `dmdb 已安装但结构不可识别（没有 createPool）。导出项：${keys || '(空)'}。`
+                + '请确认安装的是 npm 上的 dmdb，而不是其它同名包。',
+            );
+        }
+
         try {
             /**
              * connectString 的格式：
