@@ -428,7 +428,17 @@ await ok('java/start-all 与状态轮询路由都已挂载', async () => {
     assert.equal(statusPayload.code, 'NO_BATCH');
 });
 
-await ok('工具 action 里有 login 与 java', () => {
+await ok('工具描述里提到数据库，模型才会主动用', () => {
+    const tool = registered.tools[0];
+    const desc = String(tool.description || '');
+    assert.ok(/数据库/.test(desc), '工具描述应提到数据库');
+    assert.ok(/action=db/.test(desc), '工具描述应说明 action=db 的用法');
+    assert.ok(/什么时候该用 db/.test(desc), '应说明什么场景该查数据库（否则模型不会主动查）');
+    assert.ok(/describe_table/.test(desc), '应提示先看表结构');
+    assert.ok(/db_params/.test(desc), '应提示用参数化传值');
+});
+
+await ok('工具描述里提到 login 与 java', () => {
     const tool = registered.tools[0];
     const actions = tool.parameters.properties.action.enum;
     assert.ok(actions.includes('login'));
@@ -481,72 +491,63 @@ await ok('db 路由都已挂载', async () => {
     await route.handler(post('/dsh-api-runner/api/db/query', { sql: 'SELECT 1' }), noId);
     const noIdPayload = JSON.parse(noId.body);
     assert.equal(noIdPayload.ok, false, noId.body);
-    assert.equal(noIdPayload.code, 'NOT_FOUND', '空 connection_id 应走 NOT_FOUND 而不是路由缺失');
+    assert.equal(noIdPayload.code, 'MISSING_CONNECTION', '空 connection_id 应给出明确错误而不是路由缺失');
 
     // 表结构路由存在
     const table = createMockResponse();
     await route.handler(get('/dsh-api-runner/api/db/table?connection_id=nope&name=t'), table);
     const tablePayload = JSON.parse(table.body);
     assert.equal(tablePayload.ok, false, table.body);
-    assert.equal(tablePayload.code, 'NOT_FOUND');
+    // 未授权时一律 NOT_AUTHORIZED（不泄漏连接是否存在）
+    assert.ok(['NOT_AUTHORIZED', 'NOT_FOUND'].includes(tablePayload.code), table.body);
 });
 
-await ok('db 工具动作能跑通 SQLite 全链路', async () => {
+await ok('db 工具动作能跑通 SQLite 全链路（模型侧只读）', async () => {
     const tool = registered.tools[0];
     const dbFile = path.join(tmp, 'tool-test.db');
     const exec = (args) => tool.execute(args, { agent: { session: { id: 's1' } } });
 
-    // 保存连接
-    const saved = await exec({
-        action: 'db',
-        db_action: 'save',
-        connection: { name: '工具测试库', type: 'sqlite', database: dbFile },
-    });
-    assert.equal(saved.isError, false, saved.text);
-    const savedPayload = JSON.parse(saved.text);
-    assert.equal(savedPayload.ok, true, saved.text);
-    const connId = savedPayload.connection.id;
-    assert.ok(connId);
-    assert.equal(saved.text.includes('secret'), false, '输出里不应有密码字段');
+    // 用 service 直接建表并写入（模拟「人在面板里操作」），因为模型侧不允许写
+    const service = new (await import(pathToFileURL(path.join(root, 'src', 'ops.js')).href)).ApiRunnerService({ homeDir });
+    const seeded = service.dbSave({ name: '工具测试库', type: 'sqlite', database: dbFile });
+    assert.equal(seeded.ok, true, JSON.stringify(seeded));
+    const connId = seeded.connection.id;
 
-    // 建表（只读关闭）
-    const created = await exec({
-        action: 'db', db_action: 'query', connection_id: connId,
-        sql: 'CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)',
-        db_readonly: false,
-    });
-    assert.equal(JSON.parse(created.text).ok, true, created.text);
+    // 授权：先给读写来播种数据（模拟「人在面板里操作」），之后降为只读
+    const projectKey = normalizeProjectKey(projectDir) || 'default';
+    service.dbManager.setAccess(projectKey, connId, 'readwrite');
+    await service.dbQuery(connId, 'CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)', [], { projectKey, readonly: false });
+    await service.dbQuery(connId, 'INSERT INTO items (label) VALUES (?)', ['hello'], { projectKey, readonly: false });
+    // 播种完降为只读：模型侧本来就强制只读，这里给出最小权限
+    service.dbManager.setAccess(projectKey, connId, 'readonly');
+    service.dispose();
 
-    // 写入
-    const inserted = await exec({
-        action: 'db', db_action: 'query', connection_id: connId,
-        sql: 'INSERT INTO items (label) VALUES (?)',
-        db_params: ['hello'],
-        db_readonly: false,
-    });
-    assert.equal(JSON.parse(inserted.text).ok, true, inserted.text);
-
-    // 只读查询
-    const queried = await exec({
-        action: 'db', db_action: 'query', connection_id: connId,
-        sql: 'SELECT * FROM items',
-    });
+    // 模型侧查询
+    const queried = await exec({ action: 'db', db_action: 'query', connection_id: connId, sql: 'SELECT * FROM items' });
     const q = JSON.parse(queried.text);
     assert.equal(q.ok, true, queried.text);
     assert.equal(q.rowCount, 1);
     assert.equal(q.rows[0].label, 'hello');
 
-    // 默认只读：写操作被拒
-    const blocked = await exec({
-        action: 'db', db_action: 'query', connection_id: connId,
-        sql: 'DELETE FROM items',
-    });
-    const b = JSON.parse(blocked.text);
-    assert.equal(b.ok, false, blocked.text);
-    assert.equal(b.code, 'READONLY_VIOLATION');
-    assert.equal(blocked.isError, true, '失败时 isError 应为 true');
+    // 模型侧写操作一律被拒（即使传 db_readonly=false）
+    for (const sql of ['DELETE FROM items WHERE id = 1', 'DROP TABLE items', 'INSERT INTO items (label) VALUES (?)']) {
+        const blocked = await exec({
+            action: 'db', db_action: 'query', connection_id: connId,
+            sql,
+            db_params: ['x'],
+            db_readonly: false,     // 显式传 false 也没用
+        });
+        const b = JSON.parse(blocked.text);
+        assert.equal(b.ok, false, `模型不应能执行写操作：${sql} → ${blocked.text}`);
+        assert.ok(['READONLY_VIOLATION', 'PERMISSION_DENIED', 'DESTRUCTIVE_BLOCKED'].includes(b.code), blocked.text);
+        assert.equal(blocked.isError, true);
+    }
 
-    // 元数据
+    // 数据没被改
+    const after = await exec({ action: 'db', db_action: 'query', connection_id: connId, sql: 'SELECT COUNT(*) AS n FROM items' });
+    assert.equal(JSON.parse(after.text).rows[0].n, 1, '数据不应被模型改动');
+
+    // 元数据（只读，允许）
     const tables = await exec({ action: 'db', db_action: 'list_tables', connection_id: connId });
     const t = JSON.parse(tables.text);
     assert.equal(t.ok, true, tables.text);
@@ -558,7 +559,32 @@ await ok('db 工具动作能跑通 SQLite 全链路', async () => {
     assert.ok(d.columns.some((c) => c.name === 'label'));
 
     // 清理
-    await exec({ action: 'db', db_action: 'delete', connection_id: connId });
+    const cleanup = new (await import(pathToFileURL(path.join(root, 'src', 'ops.js')).href)).ApiRunnerService({ homeDir });
+    cleanup.dbDelete(connId);
+    cleanup.dispose();
+});
+
+await ok('模型侧对未授权连接完全不可见、不可查', async () => {
+    const tool = registered.tools[0];
+    const dbFile = path.join(tmp, 'unauth.db');
+    const service = new (await import(pathToFileURL(path.join(root, 'src', 'ops.js')).href)).ApiRunnerService({ homeDir });
+    const saved = service.dbSave({ name: '未授权库', type: 'sqlite', database: dbFile });
+    assert.equal(saved.ok, true);
+    const connId = saved.connection.id;
+
+    // describe 里看不到
+    const info = service.describe(projectDir);
+    assert.equal((info.databases || []).some((d) => d.id === connId), false, '未授权连接不应出现在 describe 里');
+
+    // 直接查也被拒
+    const exec = (args) => tool.execute(args, { agent: { session: { id: 's1' } } });
+    const r = await exec({ action: 'db', db_action: 'query', connection_id: connId, sql: 'SELECT 1' });
+    const payload = JSON.parse(r.text);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.code, 'NOT_AUTHORIZED');
+
+    service.dbDelete(connId);
+    service.dispose();
 });
 
 // ---- 清理 ----

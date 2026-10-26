@@ -164,8 +164,9 @@ assert.ok(/db\/query/.test(source), 'SQL 执行应走 db/query 路由');
 assert.ok(/className: 'ar-tabs'/.test(source), '顶部应有页签容器 ar-tabs');
 assert.ok(/className: 'ar-segmented'/.test(source), '一级标题应是小胶囊容器 ar-segmented');
 assert.ok(/'ar-seg on' : 'ar-seg'/.test(source), '胶囊选中态应有独立样式');
-assert.ok(/label: '连接'/.test(source) && /label: 'SQL'/.test(source) && /label: '表结构'/.test(source),
-    '数据库子页应有「连接 / SQL / 表结构」三个一级标题');
+assert.ok(/label: '连接管理'/.test(source) && /label: '项目授权'/.test(source)
+    && /label: 'SQL'/.test(source) && /label: '表结构'/.test(source),
+    '数据库子页应有「连接管理 / 项目授权 / SQL / 表结构」四个一级标题');
 assert.ok(/const \[dbSection, setDbSection\]/.test(source), '数据库子页需要 dbSection 状态');
 assert.ok(/\.ar-segmented \{/.test(source), '缺少 .ar-segmented 样式');
 assert.ok(/--ar-elevated:/.test(source), '选中态需要 --ar-elevated 变量（深/浅色主题各一份）');
@@ -191,6 +192,44 @@ assert.ok(/style\[id\^="dsh-api-runner-style"\]/.test(source), '应清理历史�
 assert.ok(/el\.textContent !== CSS/.test(source), '样式内容变化时应替换，而不是跳过');
 assert.ok(!/if \(document\.getElementById\(STYLE_ID\)\) return;/.test(source), '不能因 id 已存在就提前返回');
 assert.ok(/const STYLE_ID = '[^']*-v\d+'/.test(source), 'style id 应带版本后缀，避免被按 id 去重');
+
+/**
+ * 数据库表单的三处修复（用户报的缺陷）：
+ *   1. 端口输入框被写死 90px，和 host 挤一行时变形
+ *   2. 新增时填完没法试连
+ *   3. 支持 URL 直连
+ */
+assert.ok(!/flex: '0 0 90px'/.test(source), '端口输入框不能固定像素宽（窄面板会变形）');
+assert.ok(/测试中…' : '测试'/.test(source), '表单应有「测试」按钮，新增时也能试连');
+assert.ok(/label: 'URL'/.test(source), '表单应支持 URL 录入方式');
+assert.ok(/connectString/.test(source), '应支持 connectString（URL 模式）');
+assert.ok(/item\.urlMode \? h\('span'/.test(source), '列表应标出 URL 模式的连接');
+assert.ok(/replace\(\/\[\^\\d\]\/g, ''\)/.test(source), '端口输入框应只接受数字');
+
+// 项目授权 UI：三档切换 + 安全说明
+assert.ok(/setDbAccessLevel/.test(source), '应有设置授权的处理函数');
+assert.ok(/label: '未授权'/.test(source) && /label: '只读'/.test(source) && /label: '读写'/.test(source),
+    '授权应有「未授权 / 只读 / 读写」三档');
+assert.ok(/毁灭性操作/.test(source), '授权页应说明毁灭性操作会被拒绝');
+assert.ok(/refreshDbAccess/.test(source), '应能刷新授权状态');
+
+// UI 重设计：命名空间分离 + 设计 token
+assert.ok(/className: 'ar-switch'/.test(source), '响应切换条应使用 ar-switch（不与 ar-seg 胶囊冲突）');
+assert.ok(!/className: 'ar-seg'/.test(source), 'ar-seg 只能当胶囊按钮，不能再被当容器');
+assert.ok(/--ar-surface-1/.test(source) && /--ar-surface-2/.test(source) && /--ar-surface-3/.test(source),
+    '应有三级中性面 token，用于分层');
+assert.ok(/--ar-r-lg/.test(source), '应有大圆角 token');
+assert.ok(/dsh-api-runner-style-v5/.test(source), '样式版本应为 v5');
+
+/**
+ * 试连不能锁死整个面板：
+ * 达梦连不上要等十几秒，若共用全局 busy，期间保存/取消/编辑全被 disabled，
+ * 用户会以为界面卡死。试连必须用独立的 testing 状态。
+ */
+assert.ok(/const \[dbTesting, setDbTesting\]/.test(source), '试连应有独立状态 dbTesting');
+assert.ok(/disabled: testing \|\| busy === 'save'/.test(source), '测试按钮只锁自己，不锁其它');
+assert.ok(/busy === 'save' \? '保存中…' : '保存'/.test(source), '保存按钮只受保存中影响');
+assert.ok(!/busy === 'test'/.test(source), '不应再用全局 busy 表示测试中');
 
 /**
  * 回归：useEffect 的依赖数组里引用了「在它之后才 const 声明」的变量，

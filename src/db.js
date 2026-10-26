@@ -33,6 +33,31 @@ const DEFAULT_PORTS = {
     dm: 5236,
 };
 
+/**
+ * 是否毁灭性操作：即使有读写权限也要额外确认。
+ *
+ * 判定标准偏保守——宁可误拒，不可误放：
+ *   - DROP / TRUNCATE：直接删结构或清空表
+ *   - DELETE / UPDATE 没有 WHERE：影响整表
+ *   - 任何 GRANT / REVOKE：改权限
+ */
+export function isDestructiveSql(sql) {
+    const stripped = stripStringsAndComments(String(sql || '')).trim();
+    if (/^\s*(drop|truncate|grant|revoke)\b/i.test(stripped)) return true;
+    // DELETE / UPDATE 缺少 WHERE 子句 = 全表操作
+    if (/^\s*(delete|update)\b/i.test(stripped) && !/\bwhere\b/i.test(stripped)) return true;
+    return false;
+}
+
+/** 授权等级：none < readonly < readwrite */
+export const ACCESS_LEVELS = ['none', 'readonly', 'readwrite'];
+
+/** 等级比较：是否满足所需等级 */
+function levelAtLeast(actual, required) {
+    const order = { none: 0, readonly: 1, readwrite: 2 };
+    return (order[actual] ?? 0) >= (order[required] ?? 0);
+}
+
 /** 结果集默认上限 */
 const DEFAULT_MAX_ROWS = 1000;
 /** 查询默认超时 */
@@ -110,9 +135,145 @@ export function splitStatements(sql) {
     return out.map((item) => item.trim()).filter((item) => item !== '');
 }
 
-/** 是否只读语句 */
+/** 是否只读语句（仅看开头，作为第一道粗筛；真正的判定见 classifySql） */
 export function isReadOnlySql(sql) {
     return READONLY_PREFIX.test(String(sql || ''));
+}
+
+/**
+ * 危险关键字：出现在**任何位置**都视为写操作，即使语句以 SELECT 开头。
+ *
+ * 为什么要全串扫描而不是只看前缀：
+ *   - `WITH x AS (SELECT 1) DELETE FROM t` 以 WITH 开头，但会删数据
+ *   - `SELECT * FROM t FOR UPDATE` 会加锁，阻塞别人写入
+ *   - `SELECT ... INTO OUTFILE` / `INTO DUMPFILE` 能往磁盘写文件
+ *   - `SELECT load_file('/etc/passwd')` 能读任意文件
+ *   - `EXPLAIN ANALYZE DELETE ...` 会真的执行
+ * 这些用「开头是不是 SELECT」都拦不住。
+ */
+const DANGEROUS_KEYWORDS = [
+    'insert', 'update', 'delete', 'merge', 'upsert',
+    'create', 'alter', 'drop', 'truncate', 'rename',
+    'grant', 'revoke', 'comment',
+    'exec', 'execute', 'call', 'perform',
+    'lock', 'unlock',
+    'copy', 'load', 'outfile', 'dumpfile',
+    'attach', 'detach', 'vacuum', 'reindex',
+    'set', 'commit', 'rollback', 'savepoint', 'begin',
+    'declare', 'prepare', 'deallocate',
+    'analyze', 'optimize', 'repair', 'shutdown', 'kill',
+];
+
+/** 需要额外警惕的「以 SELECT 开头但会写」的组合 */
+const SELECT_WRITE_PATTERNS = [
+    /\bfor\s+(update|share|no\s+key\s+update)\b/i,   // 加锁
+    /\binto\s+(outfile|dumpfile)\b/i,                 // 写文件
+    /\binto\s+@?[\w.]+\s+from\b/i,                    // SELECT INTO 建表
+    /\bload_file\s*\(/i,                              // 读服务器文件
+];
+
+/**
+ * PRAGMA 的两种形态：
+ *   - 查询式：`PRAGMA table_info('t')`、`PRAGMA index_list(t)` —— 只读，放行
+ *   - 赋值式：`PRAGMA journal_mode = WAL`、`PRAGMA user_version = 5` —— 改配置，拦
+ * 白名单只放行已知的只读 pragma，其余一律按写处理。
+ */
+const READONLY_PRAGMA = /^\s*pragma\s+(table_info|table_xinfo|index_info|index_list|index_xinfo|foreign_key_list|foreign_key_check|database_list|collation_list|function_list|module_list|pragma_list|compile_options|integrity_check|quick_check|encoding|page_count|page_size|freelist_count|schema_version|user_version|journal_mode|wal_checkpoint)\b/i;
+/** 允许「读」但不允许「写」的 pragma：带 `=` 时是写 */
+const MUTABLE_PRAGMA = /^\s*pragma\s+(journal_mode|user_version|synchronous|foreign_keys|cache_size|busy_timeout|locking_mode|page_size|auto_vacuum|wal_autocheckpoint|mmap_size|temp_store|encoding)\b/i;
+
+/**
+ * 去掉 SQL 里的字符串字面量和注释，只留「结构性内容」。
+ * 关键字扫描必须基于这个结果，否则 `WHERE note = 'delete'` 会被误判成写操作。
+ */
+export function stripStringsAndComments(sql) {
+    const text = String(sql || '');
+    let out = '';
+    let i = 0;
+    let quote = '';
+    while (i < text.length) {
+        const ch = text[i];
+        const next = text[i + 1];
+        if (quote) {
+            if (ch === '\\' && (quote === "'" || quote === '"')) { i += 2; continue; }
+            if (ch === quote) {
+                if (next === quote) { i += 2; continue; }
+                quote = '';
+            }
+            i += 1;
+            continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') { quote = ch; i += 1; continue; }
+        if (ch === '-' && next === '-') {
+            const nl = text.indexOf('\n', i);
+            i = nl === -1 ? text.length : nl + 1;
+            continue;
+        }
+        if (ch === '/' && next === '*') {
+            const close = text.indexOf('*/', i + 2);
+            i = close === -1 ? text.length : close + 2;
+            continue;
+        }
+        out += ch;
+        i += 1;
+    }
+    return out;
+}
+
+/**
+ * 判定一条 SQL 的性质。
+ *
+ * @returns {{ kind: 'read'|'write'|'unknown', reason?: string, keyword?: string }}
+ *   - read：确定是只读查询，可以在只读模式下执行
+ *   - write：包含写/危险操作，只读模式下必须拒绝
+ *   - unknown：认不出来，按最严格的处理（只读模式下拒绝）
+ */
+export function classifySql(sql) {
+    const text = String(sql || '').trim();
+    if (text === '') return { kind: 'unknown', reason: 'SQL 为空' };
+
+    const stripped = stripStringsAndComments(text);
+
+    // 多语句：哪怕每一条都只读，也不允许（防止用分号绕过）
+    if (splitStatements(text).length > 1) {
+        return { kind: 'write', reason: '包含多条语句' };
+    }
+
+    // 危险关键字：全串扫描（已剔除字符串和注释）
+    for (const kw of DANGEROUS_KEYWORDS) {
+        const re = new RegExp(`\\b${kw}\\b`, 'i');
+        if (re.test(stripped)) {
+            return { kind: 'write', reason: `包含写操作关键字 ${kw.toUpperCase()}`, keyword: kw };
+        }
+    }
+
+    // SELECT 开头但带锁/写文件等
+    for (const pattern of SELECT_WRITE_PATTERNS) {
+        if (pattern.test(stripped)) {
+            return { kind: 'write', reason: '查询语句包含加锁或写文件动作' };
+        }
+    }
+
+    // PRAGMA 单独判定：赋值式会改库配置，必须拦
+    if (/^\s*pragma\b/i.test(stripped)) {
+        // 可变的 pragma 带 `=` 或带参数但不是查询式 → 写
+        if (MUTABLE_PRAGMA.test(stripped) && /\s*=\s*/.test(stripped)) {
+            return { kind: 'write', reason: 'PRAGMA 赋值会修改数据库配置' };
+        }
+        // 只读白名单
+        if (READONLY_PRAGMA.test(stripped)) {
+            return { kind: 'read' };
+        }
+        // 认不出来的 pragma：按最严格处理
+        return { kind: 'unknown', reason: '无法确认这条 PRAGMA 是只读的' };
+    }
+
+    // 结构上必须以只读关键字开头
+    if (!READONLY_PREFIX.test(text)) {
+        return { kind: 'unknown', reason: '无法识别为只读查询（只允许 SELECT / SHOW / DESCRIBE / EXPLAIN / PRAGMA）' };
+    }
+
+    return { kind: 'read' };
 }
 
 /**
@@ -160,6 +321,19 @@ export function decryptSecret(stored) {
     }
 }
 
+/**
+ * 把连接串里的密码打码，用于界面回显与日志。
+ * 形如 `dm://FUND:***@192.168.0.144:8185?...` —— 保留用户名和其余部分，
+ * 用户能确认「填的是哪个连接」，但看不到密码。
+ */
+export function maskUrlPassword(connectString) {
+    const text = String(connectString || '');
+    // scheme://user:pass@rest
+    return text.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^:/@]*):([^@]*)@/i, (_all, scheme, user, pass) => {
+        return `${scheme}${user}:${pass ? '***' : ''}@`;
+    });
+}
+
 /** 生成连接 id */
 function makeId(name) {
     const base = String(name || 'db')
@@ -179,6 +353,11 @@ export class DbManager {
         this.settingsStore = options.settingsStore || null;
         this.maxRows = Number(options.maxRows) || DEFAULT_MAX_ROWS;
         this.timeoutMs = Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS;
+        /**
+         * 试连的独立超时（默认 15s）。
+         * 比查询超时短：试连是交互动作，用户盯着等，不能让驱动自己卡 60 秒。
+         */
+        this.probeTimeoutMs = Number(options.probeTimeoutMs) || 15000;
         /** 连接池缓存：connectionId -> driver handle */
         this.pools = new Map();
         this._setDir(options.dataDir || this._preferredDataDir());
@@ -248,6 +427,93 @@ export class DbManager {
         writeStateNamespace(this.file, 'connections', { items });
     }
 
+    // ---------------------------------------------------------------- 项目授权
+    /**
+     * 授权模型：**按项目（工作空间）授权，默认拒绝**。
+     *
+     * 为什么默认拒绝而不是默认允许：
+     *   一个连到生产库的连接，如果默认对所有项目开放，那么任何一个会话
+     *   都能读它——这不可接受。所以新连接创建后是「未授权」状态，
+     *   必须由用户在面板里显式授权给某个项目。
+     *
+     * 存储：`<数据目录>/db-connections.json` 的 `access` 命名空间，
+     * 形如 { "<projectKey>": { "<connectionId>": "readonly" } }。
+     */
+    _loadAccess() {
+        const ns = readStateNamespace(this.file, 'access');
+        return isPlainObject(ns.projects) ? ns.projects : {};
+    }
+
+    _saveAccess(projects) {
+        writeStateNamespace(this.file, 'access', { projects });
+    }
+
+    /** 某个项目对所有连接的授权表：{ connectionId: level } */
+    accessOf(projectKey) {
+        const key = String(projectKey || 'default');
+        const all = this._loadAccess();
+        const row = all[key];
+        return isPlainObject(row) ? row : {};
+    }
+
+    /** 设置某项目对某连接的授权等级 */
+    setAccess(projectKey, connectionId, level) {
+        const key = String(projectKey || 'default');
+        const cid = String(connectionId || '');
+        if (cid === '') return { ok: false, code: 'MISSING_CONNECTION', message: '需要 connection_id' };
+        const lv = String(level || 'none');
+        if (!ACCESS_LEVELS.includes(lv)) {
+            return { ok: false, code: 'BAD_LEVEL', message: `授权等级只能是 ${ACCESS_LEVELS.join(' / ')}` };
+        }
+        const all = this._loadAccess();
+        const row = isPlainObject(all[key]) ? { ...all[key] } : {};
+        if (lv === 'none') delete row[cid];
+        else row[cid] = lv;
+        all[key] = row;
+        this._saveAccess(all);
+        return { ok: true, projectKey: key, connectionId: cid, level: lv, access: row };
+    }
+
+    /** 某项目的完整授权视图（给面板用）：连接 + 当前等级 */
+    accessView(projectKey) {
+        const key = String(projectKey || 'default');
+        const row = this.accessOf(key);
+        const connections = this.listConnections().map((item) => ({
+            id: item.id,
+            name: item.name,
+            type: item.type,
+            target: item.urlMode ? item.connectString : (item.type === 'sqlite' ? item.file : `${item.host}:${item.port}/${item.database}`),
+            level: row[item.id] || 'none',
+        }));
+        const authorized = connections.filter((item) => item.level !== 'none').length;
+        return { ok: true, projectKey: key, connections, authorized, total: connections.length };
+    }
+
+    /**
+     * 解析某个项目对某连接的访问权。
+     *
+     * options.projectKey 缺省时用 'default'（没有会话上下文的情况），
+     * 这样工具调用和面板请求都能落到同一个可预期的档位。
+     *
+     * connectionOverride：面板试连时用草稿配置，此时没有连接 id，
+     * 允许跳过授权检查（试连只做最轻量的 SELECT 1，不读业务数据）。
+     */
+    resolveAccess(connectionId, projectKey, connectionOverride) {
+        if (connectionOverride) return { ok: true, level: 'readonly', projectKey: String(projectKey || 'default') };
+        const key = String(projectKey || 'default');
+        const cid = String(connectionId || '');
+        if (cid === '') return { ok: false, code: 'MISSING_CONNECTION', message: '需要 connection_id' };
+        const level = this.accessOf(key)[cid] || 'none';
+        if (level === 'none') {
+            return {
+                ok: false,
+                code: 'NOT_AUTHORIZED',
+                message: `项目「${key}」没有获得这条连接的授权。请到面板「项目授权」里授权（只读 / 读写）后再试。`,
+            };
+        }
+        return { ok: true, level, projectKey: key };
+    }
+
     /** 脱敏后的连接视图：对外一律走这个 */
     _view(item) {
         return {
@@ -261,6 +527,9 @@ export class DbManager {
             /** 只给掩码，绝不回传明文 */
             hasPassword: Boolean(item.password),
             passwordMask: item.password ? maskSecret('********') : '',
+            /** URL 模式：回显时把密码打码，避免明文出现在界面/日志里 */
+            connectString: item.connectString ? maskUrlPassword(item.connectString) : '',
+            urlMode: Boolean(item.connectString),
             extra: isPlainObject(item.extra) ? item.extra : {},
             createdAt: item.createdAt || '',
             updatedAt: item.updatedAt || '',
@@ -303,13 +572,22 @@ export class DbManager {
         const name = String(input.name || existing?.name || '').trim();
         if (name === '') return { ok: false, code: 'MISSING_NAME', message: '连接名称不能为空' };
 
-        // sqlite 用 database 字段存文件路径；其它类型需要 host
+        /**
+         * 两种录入方式：
+         *   - 分字段：host / port / database / username / password
+         *   - URL：connectString 原样使用（dm://...、mysql://... 等）
+         * URL 模式下不再强制 host，字段校验要按模式分支，否则「填了 URL 却报缺 host」。
+         */
+        const connectString = String(input.connectString ?? existing?.connectString ?? '').trim();
+        const urlMode = connectString !== '';
+
+        // sqlite 用 database 字段存文件路径；其它类型（非 URL 模式）需要 host
         const database = String(input.database ?? existing?.database ?? '').trim();
         if (type === 'sqlite' && database === '') {
             return { ok: false, code: 'MISSING_DATABASE', message: 'SQLite 连接需要填写数据库文件路径（:memory: 表示内存库）' };
         }
-        if (type !== 'sqlite' && String(input.host ?? existing?.host ?? '').trim() === '') {
-            return { ok: false, code: 'MISSING_HOST', message: `${type} 连接需要填写 host` };
+        if (type !== 'sqlite' && !urlMode && String(input.host ?? existing?.host ?? '').trim() === '') {
+            return { ok: false, code: 'MISSING_HOST', message: `${type} 连接需要填写 host（或改用 URL 模式）` };
         }
 
         // 密码：显式传了新值就加密存；传空或未传则沿用旧值
@@ -329,6 +607,8 @@ export class DbManager {
             database,
             username: String(input.username ?? existing?.username ?? '').trim(),
             password,
+            /** URL 模式下的完整连接串（空表示分字段模式） */
+            connectString,
             extra: isPlainObject(input.extra) ? input.extra : (existing?.extra || {}),
             createdAt: existing?.createdAt || new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -402,6 +682,16 @@ export class DbManager {
         } catch {
             throw new Error('缺少 mysql2 依赖：请在该插件目录执行 npm install mysql2');
         }
+        // URL 模式直接交给 mysql2 解析（它原生支持 mysql:// 串）
+        if (config.connectString) {
+            const pool = mysql.createPool({
+                uri: config.connectString,
+                waitForConnections: true,
+                connectionLimit: 4,
+                ...(isPlainObject(config.extra) ? config.extra : {}),
+            });
+            return { type: 'mysql', raw: pool };
+        }
         const pool = mysql.createPool({
             host: config.host,
             port: Number(config.port) || 3306,
@@ -424,6 +714,15 @@ export class DbManager {
             throw new Error('缺少 pg 依赖：请在该插件目录执行 npm install pg');
         }
         const Pool = pg.Pool || pg.default?.Pool;
+        // URL 模式：pg 的 Pool 支持 connectionString
+        if (config.connectString) {
+            const pool = new Pool({
+                connectionString: config.connectString,
+                max: 4,
+                ...(isPlainObject(config.extra) ? config.extra : {}),
+            });
+            return { type: 'postgres', raw: pool };
+        }
         const pool = new Pool({
             host: config.host,
             port: Number(config.port) || 5432,
@@ -445,10 +744,13 @@ export class DbManager {
             throw new Error(`缺少 oracledb 依赖（原生模块，可能需匹配 Node ABI）：${error?.message || error}`);
         }
         const mod = oracledb.default || oracledb;
+        // URL 模式：oracle 的 connectString 本身就是 host:port/service 形式，直接透传
+        const connectString = config.connectString
+            || `${config.host}:${Number(config.port) || 1521}/${config.database || ''}`;
         const pool = await mod.createPool({
             user: config.username,
             password: config.password,
-            connectString: `${config.host}:${Number(config.port) || 1521}/${config.database || ''}`,
+            connectString,
             poolMax: 4,
         });
         return { type: 'oracle', raw: pool, mod };
@@ -477,20 +779,32 @@ export class DbManager {
         const mod = dmdb.default || dmdb;
         try {
             /**
-             * createPool 的 connectString 必须是完整 URL：
-             *   dm://user:password@host:port
-             * 不能像 oracledb 那样单独传 user/password（会报 "URL must start with 'dm://'"）。
-             * 用户名/密码里的特殊字符要转义，否则 URL 解析会错位。
+             * connectString 的格式：
+             *   - url 模式：原样使用用户填的 dm://... 串
+             *   - 分字段模式：dm://user:password@host:port
+             *
+             * **必须显式给 poolAlias**：dmdb 的 poolAlias 默认是 "default"，
+             * 第二个连接池就会报「数据库别名已存在」，而且后面测试/编辑/删除全废。
+             * 这里用连接 id 派生出唯一别名，保证多个达梦连接能共存。
              */
-            const user = encodeURIComponent(String(config.username || ''));
-            const pass = encodeURIComponent(String(config.password || ''));
-            const port = Number(config.port) || 5236;
-            const connectString = `dm://${user}:${pass}@${config.host}:${port}`;
+            let connectString = String(config.connectString || '').trim();
+            if (connectString === '') {
+                const user = encodeURIComponent(String(config.username || ''));
+                const pass = encodeURIComponent(String(config.password || ''));
+                const port = Number(config.port) || 5236;
+                connectString = `dm://${user}:${pass}@${config.host}:${port}`;
+            }
+            if (!/^dm:\/\//i.test(connectString)) {
+                throw new Error(`达梦连接串必须以 dm:// 开头，当前是：${connectString.slice(0, 40)}`);
+            }
+            const poolAlias = `dsh-api-runner-${String(config.id || 'conn').replace(/[^\w-]/g, '_')}`;
             const pool = await mod.createPool({
                 connectString,
+                poolAlias,
                 poolMax: 4,
+                ...(isPlainObject(config.extra) ? config.extra : {}),
             });
-            return { type: 'dm', raw: pool, mod };
+            return { type: 'dm', raw: pool, mod, poolAlias };
         } catch (error) {
             // dmdb 连接失败时内部状态是半初始化的，close 会再抛一次；吞掉它
             try {
@@ -513,7 +827,20 @@ export class DbManager {
                 // mysql2 / pg 的 end() 返回 Promise，这里不等待，失败也不影响主流程
                 Promise.resolve(handle.raw.end()).catch(() => {});
             } else if (handle.raw && typeof handle.raw.close === 'function') {
+                // dmdb / oracledb 的 close 也返回 Promise
                 Promise.resolve(handle.raw.close()).catch(() => {});
+            }
+            /**
+             * dmdb 把自己的池登记在 `dmdb.pools` 全局表里，close 之后**不一定**
+             * 会删掉这条登记（它内部只在特定分支删）。残留的别名会让下次
+             * 创建同名池时报「数据库别名已存在」，所以这里主动清一次。
+             */
+            if (handle.type === 'dm' && handle.poolAlias && handle.mod?.pools) {
+                try {
+                    handle.mod.pools.delete(handle.poolAlias);
+                } catch {
+                    /* 注册表结构变化时忽略 */
+                }
             }
         } catch {
             /* 关闭失败不影响删除操作 */
@@ -552,12 +879,47 @@ export class DbManager {
         }
         const single = statements[0];
 
-        if (options.readonly === true && !isReadOnlySql(single)) {
+        /**
+         * 权限判定顺序（从严格到宽松，任何一步不通过就拒绝）：
+         *   1. 项目授权：当前工作空间必须对该连接有授权
+         *   2. **只读开关**：options.readonly=true 时，任何非只读语句一律拒绝
+         *   3. 授权等级：写操作要求 readwrite
+         *   4. 毁灭性操作：即使有读写权限也额外拦截
+         *
+         * 第 2 步是模型侧的硬闸门：main.js 对工具调用固定传 readonly:true，
+         * 所以模型无论怎么构造参数都写不了数据。
+         */
+        const auth = this.resolveAccess(id, options.projectKey, options.connectionOverride);
+        if (!auth.ok) return auth;
+
+        const verdict = classifySql(single);
+
+        // 第 2 步：只读模式 —— 非只读语句直接拒，不看授权等级
+        if (options.readonly === true && verdict.kind !== 'read') {
             return {
                 ok: false,
                 code: 'READONLY_VIOLATION',
-                message: '只读模式已开启：只允许 SELECT / SHOW / DESCRIBE / EXPLAIN 等查询语句。要执行写操作请关闭只读模式。',
+                message: `只读模式已开启：只允许 SELECT / SHOW / DESCRIBE / EXPLAIN 等查询语句。${verdict.reason ? `（${verdict.reason}）` : ''}要执行写操作请由人在面板里操作。`,
             };
+        }
+
+        if (verdict.kind !== 'read') {
+            // 第 3 步：写操作必须 readwrite 授权
+            if (auth.level !== 'readwrite') {
+                return {
+                    ok: false,
+                    code: 'PERMISSION_DENIED',
+                    message: `当前项目对这条连接只有「${auth.level === 'readonly' ? '只读' : '未授权'}」权限，不能执行写操作。${verdict.reason ? `（${verdict.reason}）` : ''}`,
+                };
+            }
+            // 第 4 步：毁灭性操作
+            if (isDestructiveSql(single) && options.allowDestructive !== true) {
+                return {
+                    ok: false,
+                    code: 'DESTRUCTIVE_BLOCKED',
+                    message: '拒绝执行：这条语句会破坏数据结构或数据（DROP / TRUNCATE / 无 WHERE 的 DELETE / UPDATE 等）。即使有读写权限也不允许通过工具执行，请到数据库客户端人工操作。',
+                };
+            }
         }
 
         const opened = await this._handle(id);
@@ -670,7 +1032,9 @@ export class DbManager {
 
     // ---------------------------------------------------------------- 元数据
     /** 列出库（MySQL/PG 有库的概念；SQLite 只有文件） */
-    async listDatabases(id) {
+    async listDatabases(id, options = {}) {
+        const auth = this.resolveAccess(id, options.projectKey, options.connectionOverride);
+        if (!auth.ok) return auth;
         const opened = await this._handle(id);
         if (!opened.ok) return opened;
         const handle = opened.handle;
@@ -703,7 +1067,9 @@ export class DbManager {
     }
 
     /** 列出表 */
-    async listTables(id, database = '') {
+    async listTables(id, database = '', options = {}) {
+        const auth = this.resolveAccess(id, options.projectKey, options.connectionOverride);
+        if (!auth.ok) return auth;
         const opened = await this._handle(id);
         if (!opened.ok) return opened;
         const handle = opened.handle;
@@ -758,9 +1124,11 @@ export class DbManager {
     }
 
     /** 表结构：字段 + 索引 */
-    async describeTable(id, table) {
+    async describeTable(id, table, options = {}) {
         const name = String(table || '').trim();
         if (name === '') return { ok: false, code: 'MISSING_TABLE', message: '需要表名' };
+        const auth = this.resolveAccess(id, options.projectKey, options.connectionOverride);
+        if (!auth.ok) return auth;
         const opened = await this._handle(id);
         if (!opened.ok) return opened;
         const handle = opened.handle;
@@ -881,32 +1249,151 @@ export class DbManager {
         }
     }
 
-    /** 试连：真正建一次连接并执行最轻量的探测语句 */
-    async testConnection(target) {
+    /**
+     * 试连：真正建一次连接并执行最轻量的探测语句。
+     *
+     * @param {string|object} target - 连接 id，或一份草稿配置
+     * @param {{timeoutMs?:number}} options - 超时（默认 probeTimeoutMs）
+     */
+    async testConnection(target, options = {}) {
         const started = Date.now();
-        // 支持传已有 id，或传一份完整配置（新建前先试）
-        let id = '';
-        if (typeof target === 'string') id = target;
-        else if (isPlainObject(target) && target.id) id = String(target.id);
-        else if (isPlainObject(target)) {
-            // 临时配置：存一个临时 id 再试，试完删掉
-            const saved = this.saveConnection({ ...target, name: target.name || '__probe__' });
-            if (!saved.ok) return { ...saved, durationMs: Date.now() - started };
-            id = saved.connection.id;
-            try {
-                return await this._probe(id, started);
-            } finally {
-                this.deleteConnection(id);
-            }
+        const timeoutMs = Number(options.timeoutMs) || this.probeTimeoutMs;
+        /**
+         * 支持三种入参：
+         *   1. 已有连接的 id（字符串）
+         *   2. 带 id 的完整配置对象（编辑时用当前表单值试，不落盘）
+         *   3. 没有 id 的草稿配置（新增时试连）
+         *
+         * 草稿**不临时存记录**：那样会污染连接列表，而且 dmdb 的连接池别名
+         * 按 id 生成，临时 id 和正式 id 会互相撞。这里直接构造临时句柄试连。
+         */
+        if (typeof target === 'string' && target !== '') {
+            return this._withTimeout(
+                this._probe(target, started),
+                timeoutMs,
+                `连接超时（${timeoutMs}ms）`,
+            ).catch((error) => ({
+                ok: false,
+                code: 'PROBE_TIMEOUT',
+                message: this._safeError(error),
+                durationMs: Date.now() - started,
+            }));
         }
-        if (!id) return { ok: false, code: 'MISSING_ARGUMENT', message: '需要连接 id 或配置' };
-        return this._probe(id, started);
+
+        if (isPlainObject(target)) {
+            const draft = { ...target };
+            if (draft.id) {
+                // 编辑已有连接：用保存过的密码（表单里的密码框是空的）
+                const full = this._fullConfig(draft.id);
+                if (full && (draft.password === undefined || draft.password === '')) draft.password = full.password;
+                if (full && !draft.connectString && full.connectString) draft.connectString = full.connectString;
+            }
+            const normalized = this._normalizeDraft(draft);
+            if (!normalized.ok) return { ...normalized, durationMs: Date.now() - started };
+            return this._probeDraft(normalized.config, started, timeoutMs);
+        }
+
+        return { ok: false, code: 'MISSING_ARGUMENT', message: '需要连接 id 或配置' };
+    }
+
+    /** 把草稿补成完整配置（补齐默认端口等），不落盘 */
+    _normalizeDraft(draft) {
+        const type = String(draft.type || 'sqlite').toLowerCase();
+        if (!DB_TYPES.includes(type)) {
+            return { ok: false, code: 'BAD_TYPE', message: `不支持的数据库类型：${type}` };
+        }
+        const connectString = String(draft.connectString || '').trim();
+        /**
+         * 试连必须用**独立于正式连接**的临时 id。
+         *
+         * 之前这里直接沿用 draft.id（编辑时就是已保存连接的 id），
+         * 于是 dmdb 会用同一个 poolAlias 再建一次池，撞上「连接池别名已存在」；
+         * 而且撞完后该连接的后续测试/编辑/删除全废。
+         * 统一加 probe- 前缀，保证试连的池和正式池永不重名。
+         */
+        const probeId = `probe-${crypto.randomBytes(4).toString('hex')}`;
+        const config = {
+            id: probeId,
+            type,
+            host: String(draft.host || '').trim(),
+            port: Number(draft.port) || DEFAULT_PORTS[type] || 0,
+            database: String(draft.database || '').trim(),
+            username: String(draft.username || '').trim(),
+            password: String(draft.password || ''),
+            connectString,
+            extra: isPlainObject(draft.extra) ? draft.extra : {},
+        };
+        if (type === 'sqlite' && config.database === '') {
+            return { ok: false, code: 'MISSING_DATABASE', message: 'SQLite 需要填写数据库文件路径（:memory: 表示内存库）' };
+        }
+        if (type !== 'sqlite' && connectString === '' && config.host === '') {
+            return { ok: false, code: 'MISSING_HOST', message: `${type} 需要填写 host（或改用 URL 模式）` };
+        }
+        return { ok: true, config };
+    }
+
+    /**
+     * 用临时句柄试连，结束后一定关掉。
+     *
+     * **必须有超时**：达梦/MySQL 连不上时驱动自己会卡 30–60 秒，
+     * 期间面板所有按钮都被 disabled，用户会以为「点不动了」。
+     * 这里在打开阶段和探测阶段各加一层超时，最坏情况 ~15 秒返回。
+     */
+    async _probeDraft(config, started, timeoutMs) {
+        const budget = Number(timeoutMs) || this.probeTimeoutMs || 15000;
+        let handle;
+        try {
+            handle = await this._withTimeout(
+                (async () => {
+                    if (config.type === 'sqlite') return this._openSqlite(config);
+                    if (config.type === 'mysql') return this._openMysql(config);
+                    if (config.type === 'postgres') return this._openPostgres(config);
+                    if (config.type === 'oracle') return this._openOracle(config);
+                    if (config.type === 'dm') return this._openDm(config);
+                    throw new Error(`不支持的数据库类型：${config.type}`);
+                })(),
+                budget,
+                `连接超时（${budget}ms）`,
+            );
+        } catch (error) {
+            return { ok: false, code: 'CONNECT_FAILED', message: this._safeError(error), durationMs: Date.now() - started };
+        }
+        const remaining = Math.max(2000, budget - (Date.now() - started));
+        const probe = await this._withTimeout(
+            this._probeHandle(handle, started),
+            remaining,
+            `探测超时（${remaining}ms）`,
+        ).catch((error) => ({
+            ok: false,
+            code: 'PROBE_TIMEOUT',
+            message: this._safeError(error),
+            durationMs: Date.now() - started,
+        }));
+        // 试连用的池不能留着，否则 dmdb 别名/资源都会累积
+        this._closeHandle(handle);
+        return probe;
+    }
+
+    /** 给任意 Promise 套一个超时；超时后不再等它，但也不阻塞后续清理 */
+    _withTimeout(promise, ms, message) {
+        const timeout = Number(ms);
+        if (!timeout || timeout <= 0) return promise;
+        let timer;
+        const guard = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), timeout);
+            timer.unref?.();
+        });
+        return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
     }
 
     async _probe(id, started) {
         const opened = await this._handle(id);
         if (!opened.ok) return { ...opened, durationMs: Date.now() - started };
-        const handle = opened.handle;
+        return this._probeHandle(opened.handle, started);
+    }
+
+    /** 对任意句柄跑最轻量的探测语句 */
+    async _probeHandle(handle, started) {
         try {
             if (handle.type === 'sqlite') handle.raw.prepare('SELECT 1').all();
             else if (handle.type === 'mysql') await handle.raw.query('SELECT 1');
@@ -916,6 +1403,25 @@ export class DbManager {
             return { ok: true, durationMs: Date.now() - started, message: '连接成功' };
         } catch (error) {
             return { ok: false, code: 'DB_ERROR', message: this._safeError(error), durationMs: Date.now() - started };
+        }
+    }
+
+    /** 关闭任意句柄（不涉及 this.pools 注册表） */
+    _closeHandle(handle) {
+        if (!handle) return;
+        try {
+            if (handle.type === 'sqlite') handle.raw.close();
+            else if (handle.raw && typeof handle.raw.end === 'function') Promise.resolve(handle.raw.end()).catch(() => {});
+            else if (handle.raw && typeof handle.raw.close === 'function') Promise.resolve(handle.raw.close()).catch(() => {});
+            if (handle.type === 'dm' && handle.poolAlias && handle.mod?.pools) {
+                try {
+                    handle.mod.pools.delete(handle.poolAlias);
+                } catch {
+                    /* 注册表结构变化时忽略 */
+                }
+            }
+        } catch {
+            /* 关闭失败不影响结果 */
         }
     }
 

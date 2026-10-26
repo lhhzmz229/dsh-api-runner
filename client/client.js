@@ -32,267 +32,406 @@ window.__ModuleLoader__.load({
          * 插件升级后页面里仍是旧 CSS（表现为「改了样式但刷新没用」）。
          * 每次改样式就把版本号 +1，旧元素自然失效，新样式必定注入。
          */
-        const STYLE_ID = 'dsh-api-runner-style-v3';
+        const STYLE_ID = 'dsh-api-runner-style-v5';
         const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'];
+
+        /** 数据库类型下拉项：value 传给后端，label 给人看 */
+        const DB_TYPE_OPTIONS = [
+            { value: 'sqlite', label: 'SQLite' },
+            { value: 'mysql', label: 'MySQL' },
+            { value: 'postgres', label: 'PostgreSQL' },
+            { value: 'oracle', label: 'Oracle' },
+            { value: 'dm', label: '达梦 DM' },
+        ];
+        /** 各类型默认端口，只用于输入框占位提示 */
+        const DEFAULT_PORT_HINT = {
+            mysql: 3306,
+            postgres: 5432,
+            oracle: 1521,
+            dm: 5236,
+        };
 
         // ---------------------------------------------------------------- 样式
         const CSS = `
-.ar-root { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; box-sizing: border-box;
-  font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-  --ar-accent: var(--dsw-alias-brand-primary, #0a84ff);
-  --ar-surface: rgba(120, 120, 128, .12);
-  --ar-surface-strong: rgba(120, 120, 128, .18);
-  /* 选中态用的「抬起」底色：深色主题下比背景亮一点，浅色主题下接近纯白 */
-  --ar-elevated: var(--dsw-alias-bg-elevated, rgba(255, 255, 255, .14));
-  --ar-sep: rgba(120, 120, 128, .22);
-  --ar-danger: var(--dsw-alias-state-error-primary, #ff453a);
-  --ar-success: var(--dsw-alias-state-success-primary, #30d158);
-  --ar-warn: var(--dsw-alias-state-warn-primary, #ffd60a);
-  --ar-r-card: 12px;
-  --ar-r-ctrl: 8px;
-  --ar-r-pill: 6px;
-  --ar-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  --ar-ease: cubic-bezier(.25, .1, .25, 1);
-}
-@media (prefers-color-scheme: light) {
-  .ar-root { --ar-surface: rgba(120, 120, 128, .09); --ar-surface-strong: rgba(120, 120, 128, .15);
-    --ar-elevated: var(--dsw-alias-bg-elevated, #ffffff);
-    --ar-sep: rgba(60, 60, 67, .16);
-    --ar-danger: var(--dsw-alias-state-error-primary, #ff3b30);
-    --ar-success: var(--dsw-alias-state-success-primary, #34c759);
-    --ar-warn: var(--dsw-alias-state-warn-primary, #ff9f0a); }
-}
+        /* ══════════════════════════════════════════════════════════════════════
+           dsh-api-runner 面板样式
+           设计语言：与 DSH 宿主一致（中性灰阶 + 品牌色点缀 + 大圆角 + 柔和阴影）
+           层级：顶部页签（容器内白底胶囊）→ 一级标题（独立小胶囊）→ 内容卡片
+           所有颜色走 --dsw-alias-* token，取不到时回落到固定值，深浅色主题都成立
+           ══════════════════════════════════════════════════════════════════════ */
+        .ar-root {
+          display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; box-sizing: border-box;
+          font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+          font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
 
-/* ---- 顶部：页签胶囊（参照 DSH 插件详情页的分段控件）----
-   两层结构刻意做得不一样，一眼能看出层级：
-     · 顶部 ar-topbar：整条浅灰底容器，装四个页签，选中项白底 + 阴影
-     · 一级标题 ar-segmented：独立小胶囊，不套外层容器，选中项白底
-*/
-.ar-top { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 10px 12px 8px; }
-/* 窄面板（右侧栏 ~300px）里四个页签 + 刷新按钮会挤，允许容器横向滚动兜底 */
-.ar-tabs { flex: 1 1 auto; display: flex; gap: 2px; padding: 3px; min-width: 0;
-  background: var(--ar-surface); border-radius: var(--ar-r-ctrl); overflow-x: auto; scrollbar-width: none; }
-.ar-tabs::-webkit-scrollbar { display: none; }
-.ar-tab { flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  border: 0; background: transparent; color: inherit; cursor: pointer; padding: 5px 8px; font: inherit; font-size: 12.5px;
-  border-radius: var(--ar-r-pill); white-space: nowrap; opacity: .7;
-  transition: background-color .18s var(--ar-ease), opacity .18s var(--ar-ease), box-shadow .18s var(--ar-ease); }
-.ar-tab:hover { opacity: .92; }
-/* 选中：白底 + 轻阴影 + 深色字，和宿主的分段控件一致 */
-.ar-tab.on { opacity: 1; font-weight: 600; background: var(--ar-elevated); box-shadow: 0 1px 3px rgba(0, 0, 0, .14); }
-.ar-count { font-size: 10px; font-weight: 600; line-height: 1; padding: 2px 4px; border-radius: 4px;
-  background: var(--ar-surface-strong); opacity: .85; }
-.ar-tab.on .ar-count { background: var(--ar-surface-strong); color: inherit; opacity: 1; }
+          /* 中性面：从最浅到最深，用于分层 */
+          --ar-surface-1: rgba(120, 120, 128, .07);
+          --ar-surface-2: rgba(120, 120, 128, .12);
+          --ar-surface-3: rgba(120, 120, 128, .18);
+          --ar-elevated: var(--dsw-alias-bg-elevated, rgba(255, 255, 255, .16));
+          --ar-sep: rgba(120, 120, 128, .20);
+          --ar-sep-soft: rgba(120, 120, 128, .12);
 
-/* ---- 一级标题：独立小胶囊（参照 DSH 插件详情页的「连接…/项目…/数据…」）---- */
-/* 一级标题胶囊：强制横向一排，绝不换行。
-   面板很窄（右侧栏只有 ~300px），一旦允许 wrap 就会被挤成竖排——
-   参照宿主插件详情页的做法：横向滚动，胶囊本身不压缩。 */
-.ar-segmented { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
-  padding: 2px 0 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
-.ar-segmented::-webkit-scrollbar { display: none; }
-.ar-seg { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; border: 0; cursor: pointer;
-  padding: 5px 12px; font: inherit; font-size: 12.5px; white-space: nowrap;
-  background: var(--ar-surface); color: inherit; border-radius: var(--ar-r-pill); opacity: .82;
-  transition: background-color .18s var(--ar-ease), opacity .18s var(--ar-ease), box-shadow .18s var(--ar-ease); }
-.ar-seg:hover { opacity: 1; background: var(--ar-surface-strong); }
-.ar-seg.on { opacity: 1; font-weight: 600; background: var(--ar-elevated);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .14), 0 0 0 .5px rgba(0, 0, 0, .04); }
-.ar-seg .n { font-size: 10.5px; font-weight: 600; opacity: .55; }
-.ar-seg.on .n { opacity: .8; }
+          /* 语义色 */
+          --ar-accent: var(--dsw-alias-brand-primary, #0a84ff);
+          --ar-accent-soft: rgba(10, 132, 255, .12);
+          --ar-danger: var(--dsw-alias-state-error-primary, #ff453a);
+          --ar-danger-soft: rgba(255, 69, 58, .12);
+          --ar-success: var(--dsw-alias-state-success-primary, #30d158);
+          --ar-success-soft: rgba(48, 209, 88, .12);
+          --ar-warn: var(--dsw-alias-state-warn-primary, #ffd60a);
+          --ar-warn-soft: rgba(255, 214, 10, .14);
 
-.ar-body { flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto; padding: 2px 12px 24px;
-  display: flex; flex-direction: column; gap: 10px; }
-.ar-pane { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+          /* 圆角与动效 */
+          --ar-r-lg: 14px;
+          --ar-r-md: 10px;
+          --ar-r-sm: 8px;
+          --ar-r-pill: 999px;
+          --ar-ease: cubic-bezier(.32, .72, 0, 1);
+          --ar-dur: .18s;
 
-/* ---- 排版 ---- */
-.ar-mono { font-family: var(--ar-mono); }
-.ar-muted { opacity: .6; }
-.ar-faint { opacity: .45; }
-.ar-cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ar-spacer { flex: 1 1 auto; min-width: 0; }
-.ar-row { display: flex; align-items: center; gap: 6px; }
+          --ar-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Cascadia Mono', monospace;
+        }
+        @media (prefers-color-scheme: light) {
+          .ar-root {
+            --ar-surface-1: rgba(120, 120, 128, .05);
+            --ar-surface-2: rgba(120, 120, 128, .09);
+            --ar-surface-3: rgba(120, 120, 128, .14);
+            --ar-elevated: var(--dsw-alias-bg-elevated, #ffffff);
+            --ar-sep: rgba(60, 60, 67, .14);
+            --ar-sep-soft: rgba(60, 60, 67, .08);
+            --ar-accent-soft: rgba(10, 132, 255, .10);
+            --ar-danger: var(--dsw-alias-state-error-primary, #ff3b30);
+            --ar-danger-soft: rgba(255, 59, 48, .09);
+            --ar-success: var(--dsw-alias-state-success-primary, #34c759);
+            --ar-success-soft: rgba(52, 199, 89, .10);
+            --ar-warn: var(--dsw-alias-state-warn-primary, #ff9f0a);
+            --ar-warn-soft: rgba(255, 159, 10, .12);
+          }
+        }
 
-/* 分组标题：一行小标题 + 右延细线 */
-.ar-sec { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-.ar-sec .t { font-size: 12.5px; font-weight: 600; letter-spacing: .01em; opacity: .72; white-space: nowrap; }
-.ar-sec::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--ar-sep); }
+        /* ─────────────────────────── 顶部页签 ─────────────────────────── */
+        .ar-top { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
+        .ar-tabs {
+          flex: 1 1 auto; display: flex; gap: 3px; padding: 3px; min-width: 0;
+          background: var(--ar-surface-2); border-radius: var(--ar-r-md);
+          overflow-x: auto; scrollbar-width: none;
+        }
+        .ar-tabs::-webkit-scrollbar { display: none; }
+        .ar-tab {
+          flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+          border: 0; background: transparent; color: inherit; cursor: pointer;
+          padding: 6px 10px; font: inherit; font-size: 12.5px; font-weight: 500;
+          border-radius: var(--ar-r-sm); white-space: nowrap; opacity: .66;
+          transition: background-color var(--ar-dur) var(--ar-ease),
+                      opacity var(--ar-dur) var(--ar-ease),
+                      box-shadow var(--ar-dur) var(--ar-ease);
+        }
+        .ar-tab:hover { opacity: .9; }
+        .ar-tab.on {
+          opacity: 1; font-weight: 600; background: var(--ar-elevated);
+          box-shadow: 0 1px 2px rgba(0, 0, 0, .10), 0 2px 8px rgba(0, 0, 0, .06);
+        }
+        .ar-count {
+          font-size: 10px; font-weight: 600; line-height: 1; padding: 2px 5px;
+          border-radius: var(--ar-r-pill); background: var(--ar-surface-3); opacity: .8;
+        }
+        .ar-tab.on .ar-count { opacity: 1; }
 
-/* 二级页签：和顶部同一套分段控件，但用颜色区分层级——
-   顶部（接口/服务/设置）是灰底 + 灰白选中块，二级（已接管/运行中/…、项目分类）去掉灰底容器、
-   选中态用品牌色实心块。这样一眼能看出「当前在哪一层」，不会和顶部混成同一排。
-   注意：选中态用实心 accent 而不是半透明混合，避免依赖 color-mix，浅色/深色主题都稳。 */
-.ar-tabs.sub { flex: none; background: transparent; padding: 0; gap: 4px; }
-.ar-tabs.sub .ar-tab { padding: 4px 8px; font-size: 12px; background: var(--ar-surface); opacity: .72; }
-/* 二级页签（已接管/运行中/…、项目分类）：改成和一级标题同款的小胶囊，
-   但用「品牌色实心」区分层级，不和顶部那排白底选中块混淆。 */
-.ar-tabs.sub { flex: none; background: transparent; padding: 0; gap: 6px; }
-.ar-tabs.sub .ar-tab { flex: 0 0 auto; padding: 5px 11px; font-size: 12px; background: var(--ar-surface); opacity: .82; }
-.ar-tabs.sub .ar-tab:hover { opacity: 1; }
-.ar-tabs.sub .ar-tab.on {
-  background: var(--ar-accent); color: #fff; opacity: 1; font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
-}
-.ar-tabs.sub .ar-count { font-size: 9.5px; padding: 1px 4px; background: var(--ar-surface-strong); opacity: .9; }
-.ar-tabs.sub .ar-tab.on .ar-count { background: rgba(255, 255, 255, .26); color: #fff; opacity: 1; }
-/* 项目多的时候横向滚动，不换行、不压扁页签 */
-.ar-tabs.ar-projects { overflow-x: auto; scrollbar-width: none; }
-.ar-tabs.ar-projects::-webkit-scrollbar { display: none; }
-.ar-tabs.ar-projects .ar-tab { flex: 0 0 auto; max-width: 132px; }
-.ar-tabs.ar-projects .ar-tab .l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        /* ─────────────────────── 一级标题：独立胶囊 ───────────────────────
+           面板很窄（右侧栏 ~300px），必须 nowrap + 横向滚动，否则会被挤成竖排。 */
+        .ar-segmented {
+          display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+          padding: 0 0 12px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+        }
+        .ar-segmented::-webkit-scrollbar { display: none; }
+        .ar-segmented.tight { padding-bottom: 0; }
+        .ar-seg {
+          flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+          border: 0; cursor: pointer; padding: 6px 13px; font: inherit;
+          font-size: 12.5px; font-weight: 500; white-space: nowrap;
+          background: var(--ar-surface-2); color: inherit;
+          border-radius: var(--ar-r-pill); opacity: .78;
+          transition: background-color var(--ar-dur) var(--ar-ease),
+                      opacity var(--ar-dur) var(--ar-ease),
+                      box-shadow var(--ar-dur) var(--ar-ease);
+        }
+        .ar-seg:hover:not(:disabled) { opacity: 1; background: var(--ar-surface-3); }
+        .ar-seg:disabled { cursor: default; opacity: .45; }
+        .ar-seg.on {
+          opacity: 1; font-weight: 600; background: var(--ar-elevated);
+          box-shadow: 0 1px 2px rgba(0, 0, 0, .10), 0 2px 8px rgba(0, 0, 0, .06);
+        }
+        .ar-seg .n { font-size: 10.5px; font-weight: 600; opacity: .5; }
+        .ar-seg.on .n { opacity: .75; }
 
-/* ---- inset grouped 卡片 ---- */
-.ar-card { display: flex; flex-direction: column; gap: 9px; padding: 12px;
-  background: var(--ar-surface); border: 0; border-radius: var(--ar-r-card); }
-.ar-group { display: flex; flex-direction: column; background: var(--ar-surface);
-  border-radius: var(--ar-r-card); overflow: hidden; }
-.ar-item { display: flex; flex-direction: column; gap: 6px; padding: 11px 12px;
-  transition: background-color .15s var(--ar-ease); }
-.ar-item + .ar-item { border-top: 1px solid var(--ar-sep); }
-.ar-head { display: flex; align-items: flex-start; gap: 8px; }
-.ar-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.ar-name { font-size: 13px; font-weight: 600; }
+        /* ─────────────────────────── 主体滚动区 ─────────────────────────── */
+        .ar-body {
+          flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto;
+          padding: 0 14px 28px; display: flex; flex-direction: column; gap: 12px;
+          scrollbar-width: thin;
+        }
+        .ar-pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-/* ---- 徽章 / 方法标 ---- */
-.ar-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--ar-r-pill);
-  font-size: 11px; font-weight: 500; white-space: nowrap; line-height: 1;
-  background: var(--ar-surface-strong); opacity: .9; }
-.ar-badge.ok { color: var(--ar-success); background: rgba(48, 209, 88, .14); opacity: 1; }
-.ar-badge.warn { color: var(--ar-warn); background: rgba(255, 214, 10, .14); opacity: 1; }
-.ar-badge.err { color: var(--ar-danger); background: rgba(255, 69, 58, .14); opacity: 1; }
-.ar-badge.brand { color: var(--ar-accent); background: rgba(10, 132, 255, .14); opacity: 1; }
-.ar-m { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  min-width: 46px; height: 19px; padding: 0 5px; border-radius: 5px;
-  font-family: var(--ar-mono); font-size: 10.5px; font-weight: 700; letter-spacing: .02em; }
-.ar-m.get { color: #0a84ff; background: rgba(10, 132, 255, .14); }
-.ar-m.post { color: #34c759; background: rgba(52, 199, 89, .16); }
-.ar-m.put, .ar-m.patch { color: #ff9f0a; background: rgba(255, 159, 10, .16); }
-.ar-m.del { color: #ff3b30; background: rgba(255, 59, 48, .14); }
+        /* ─────────────────────────── 排版工具 ─────────────────────────── */
+        .ar-mono { font-family: var(--ar-mono); }
+        .ar-muted { opacity: .58; }
+        .ar-faint { opacity: .42; }
+        .ar-cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ar-spacer { flex: 1 1 auto; min-width: 0; }
+        .ar-row { display: flex; align-items: center; gap: 8px; }
 
-/* ---- 地址：host 弱、path 强 ---- */
-.ar-url { font-family: var(--ar-mono); font-size: 11.5px; overflow-wrap: anywhere; }
-.ar-url .h { opacity: .5; }
-.ar-url .p { opacity: .95; }
+        /* 分组小标题：一行字 + 右延细线 */
+        .ar-sec { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+        .ar-sec .t {
+          font-size: 11.5px; font-weight: 600; letter-spacing: .03em;
+          text-transform: uppercase; opacity: .5; white-space: nowrap;
+        }
+        .ar-sec::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--ar-sep-soft); }
 
-/* ---- 按钮：胶囊填充 ---- */
-.ar-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  border: 0; border-radius: var(--ar-r-ctrl); padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 500;
-  cursor: pointer; white-space: nowrap; color: inherit; background: var(--ar-surface);
-  transition: background-color .18s var(--ar-ease), filter .18s var(--ar-ease), transform .18s var(--ar-ease), opacity .18s var(--ar-ease); }
-.ar-btn:active:not(:disabled) { transform: scale(.97); }
-.ar-btn:disabled { opacity: .38; cursor: default; transform: none; }
-.ar-btn.primary { background: var(--ar-accent); color: #fff; }
-.ar-btn.tonal { background: var(--ar-surface-strong); }
-.ar-btn.ghost { background: transparent; opacity: .62; padding: 5px 9px; }
-.ar-btn.danger { color: var(--ar-danger); }
-.ar-btn.icon { padding: 5px; width: 28px; }
-@media (hover: hover) and (pointer: fine) {
-  .ar-btn:hover:not(:disabled) { background: var(--ar-surface-strong); }
-  .ar-btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--ar-accent); }
-  .ar-btn.ghost:hover:not(:disabled) { background: var(--ar-surface); opacity: .95; }
-  .ar-btn.danger:hover:not(:disabled) { background: rgba(255, 69, 58, .12); }
-  .ar-item:hover { background: var(--ar-surface-strong); }
-}
+        /* ─────────────────────── 二级页签（分组内） ───────────────────────
+           与一级标题同款胶囊，但选中态用品牌色实心，区分层级。 */
+        .ar-tabs.sub { flex: none; background: transparent; padding: 0; gap: 6px; overflow: visible; }
+        .ar-tabs.sub .ar-tab {
+          flex: 0 0 auto; padding: 5px 12px; font-size: 12px;
+          background: var(--ar-surface-2); opacity: .78;
+        }
+        .ar-tabs.sub .ar-tab:hover { opacity: 1; background: var(--ar-surface-3); }
+        .ar-tabs.sub .ar-tab.on {
+          background: var(--ar-accent); color: #fff; opacity: 1; font-weight: 600;
+          box-shadow: 0 1px 4px rgba(10, 132, 255, .32);
+        }
+        .ar-tabs.sub .ar-count { background: rgba(255, 255, 255, .22); opacity: .95; }
+        .ar-tabs.sub .ar-tab:not(.on) .ar-count { background: var(--ar-surface-3); }
 
-/* ---- 表单：无边框填充 ---- */
-.ar-field { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; align-items: center; }
-.ar-field.top { align-items: start; }
-.ar-field > label { font-size: 12px; opacity: .62; }
-.ar-field.top > label { padding-top: 7px; }
-.ar-in, .ar-sel, .ar-ta { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
-  color: inherit; background: var(--ar-surface-strong); border: 0; border-radius: var(--ar-r-ctrl);
-  padding: 6px 10px; outline: 2px solid transparent; outline-offset: -1px;
-  transition: outline-color .18s var(--ar-ease); }
-.ar-in, .ar-sel { height: 30px; padding-top: 0; padding-bottom: 0; }
-.ar-sel { cursor: pointer; }
-.ar-ta { min-height: 60px; resize: vertical; font-family: var(--ar-mono); font-size: 12px; line-height: 1.5; }
-.ar-in:focus, .ar-sel:focus, .ar-ta:focus { outline-color: var(--ar-accent); }
-.ar-in::placeholder, .ar-ta::placeholder { color: inherit; opacity: .38; }
-.ar-check { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 13px; }
-.ar-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--ar-accent); cursor: pointer; flex: none; }
-.ar-hint { font-size: 11.5px; opacity: .55; line-height: 1.55; }
+        /* 项目分类页签：多了就横向滚动 */
+        .ar-tabs.ar-projects { overflow-x: auto; scrollbar-width: none; }
+        .ar-tabs.ar-projects::-webkit-scrollbar { display: none; }
+        .ar-tabs.ar-projects .ar-tab { flex: 0 0 auto; max-width: 140px; }
+        .ar-tabs.ar-projects .ar-tab .l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- 提示条 ---- */
-.ar-banner { display: flex; align-items: flex-start; gap: 7px; padding: 8px 11px;
-  border-radius: var(--ar-r-ctrl); font-size: 12.5px; line-height: 1.5;
-  background: var(--ar-surface); }
-.ar-banner > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-/* 关闭按钮做成「纯文字 ×」：无边框无底色，颜色跟着提示条走，位置钉在最后一行右侧 */
-.ar-banner > .ar-x { flex: none; margin-left: auto; align-self: center;
-  appearance: none; -webkit-appearance: none; border: 0 none; background: none; box-shadow: none;
-  color: inherit; cursor: pointer; font-family: inherit; font-size: 15px; line-height: 1;
-  padding: 0 1px 2px; border-radius: 4px; opacity: .55;
-  transition: opacity .16s var(--ar-ease); }
-.ar-banner > .ar-x:hover { opacity: .95; }
-.ar-banner > .ar-x:focus-visible { outline: 1px solid currentColor; outline-offset: 1px; opacity: .95; }
-.ar-banner.err { color: var(--ar-danger); background: rgba(255, 69, 58, .12); }
-.ar-banner.ok { color: var(--ar-success); background: rgba(52, 199, 89, .12); }
+        /* ─────────────────────────── 卡片与列表 ─────────────────────────── */
+        .ar-card {
+          display: flex; flex-direction: column; gap: 10px; padding: 14px;
+          background: var(--ar-surface-1); border-radius: var(--ar-r-lg);
+          border: 1px solid var(--ar-sep-soft);
+        }
+        .ar-group {
+          display: flex; flex-direction: column;
+          background: var(--ar-surface-1); border-radius: var(--ar-r-lg);
+          border: 1px solid var(--ar-sep-soft); overflow: hidden;
+        }
+        .ar-item {
+          display: flex; flex-direction: column; gap: 7px; padding: 12px 14px;
+          transition: background-color .15s var(--ar-ease);
+        }
+        .ar-item + .ar-item { border-top: 1px solid var(--ar-sep-soft); }
+        .ar-item-on { box-shadow: inset 3px 0 0 var(--ar-accent); background: var(--ar-accent-soft); }
+        .ar-head { display: flex; align-items: flex-start; gap: 10px; }
+        .ar-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        .ar-name { font-size: 13.5px; font-weight: 600; letter-spacing: -.005em; }
 
-/* ---- 响应查看 ---- */
-.ar-pre { margin: 0; padding: 10px 11px; border-radius: var(--ar-r-ctrl);
-  background: var(--ar-surface-strong); font-family: var(--ar-mono); font-size: 12px; line-height: 1.55;
-  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
-.ar-seg { display: flex; gap: 2px; padding: 2px; background: var(--ar-surface); border-radius: var(--ar-r-pill); }
-.ar-seg > button { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 11.5px;
-  padding: 3px 9px; border-radius: 5px; opacity: .62; transition: background-color .18s var(--ar-ease), opacity .18s var(--ar-ease); }
-.ar-seg > button:hover { opacity: .9; }
-.ar-seg > button.on { opacity: 1; font-weight: 600; background: var(--ar-surface-strong); }
+        /* ─────────────────────────── 徽章 / 方法标 ─────────────────────────── */
+        .ar-badge {
+          display: inline-flex; align-items: center; height: 19px; padding: 0 7px;
+          border-radius: var(--ar-r-pill); font-size: 11px; font-weight: 500;
+          white-space: nowrap; line-height: 1; background: var(--ar-surface-3); opacity: .92;
+        }
+        .ar-badge.ok { color: var(--ar-success); background: var(--ar-success-soft); opacity: 1; }
+        .ar-badge.warn { color: var(--ar-warn); background: var(--ar-warn-soft); opacity: 1; }
+        .ar-badge.err { color: var(--ar-danger); background: var(--ar-danger-soft); opacity: 1; }
+        .ar-badge.brand { color: var(--ar-accent); background: var(--ar-accent-soft); opacity: 1; }
 
-/* ---- 空态 ---- */
-.ar-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 30px 16px; text-align: center; }
-.ar-empty-icon { font-size: 22px; opacity: .3; line-height: 1; }
-.ar-empty-title { font-size: 13px; font-weight: 600; }
-.ar-empty-hint { font-size: 12px; opacity: .55; line-height: 1.6; max-width: 230px; }
+        .ar-m {
+          display: inline-flex; align-items: center; justify-content: center; flex: none;
+          min-width: 48px; height: 20px; padding: 0 6px; border-radius: 6px;
+          font-family: var(--ar-mono); font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+        }
+        .ar-m.get { color: #0a84ff; background: rgba(10, 132, 255, .14); }
+        .ar-m.post { color: #34c759; background: rgba(52, 199, 89, .15); }
+        .ar-m.put, .ar-m.patch { color: #ff9f0a; background: rgba(255, 159, 10, .15); }
+        .ar-m.del { color: #ff3b30; background: rgba(255, 59, 48, .13); }
 
-/* ---- 数据库：结果表格 ---- */
-.ar-item-on { box-shadow: inset 2px 0 0 var(--ar-accent); }
-.ar-table-wrap { width: 100%; overflow-x: auto; border-radius: var(--ar-r-ctrl); background: var(--ar-surface); }
-.ar-table { border-collapse: collapse; width: 100%; font-size: 12px; font-family: var(--ar-mono); }
-.ar-table th { text-align: left; font-weight: 600; padding: 6px 9px; white-space: nowrap;
-  border-bottom: 1px solid var(--ar-sep); opacity: .7; position: sticky; top: 0; background: var(--ar-surface-strong); }
-.ar-table td { padding: 5px 9px; border-bottom: 1px solid var(--ar-sep); white-space: nowrap; max-width: 320px;
-  overflow: hidden; text-overflow: ellipsis; }
-.ar-table tbody tr:last-child td { border-bottom: none; }
-.ar-table tbody tr:hover td { background: var(--ar-surface-strong); }
+        /* ─────────────────────────── 地址行 ─────────────────────────── */
+        .ar-url { font-family: var(--ar-mono); font-size: 11.5px; overflow-wrap: anywhere; line-height: 1.5; }
+        .ar-url .h { opacity: .45; }
+        .ar-url .p { opacity: .95; }
 
-/* ---- 一键启动进度 ---- */
-.ar-batch { display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: var(--ar-r-card);
-  background: var(--ar-surface); }
-.ar-batch-top { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
-.ar-batch-bar { height: 4px; border-radius: 2px; background: var(--ar-surface-strong); overflow: hidden; }
-.ar-batch-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--ar-accent);
-  transition: width .25s var(--ar-ease); }
-.ar-batch-line { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
-.ar-batch-line > .n { flex: 0 0 auto; font-family: var(--ar-mono); }
-.ar-batch-line.ok > .n { color: var(--ar-success); }
-.ar-batch-line.err > .n { color: var(--ar-danger); }
-.ar-batch-line.skip > .n { color: var(--ar-warn); }
+        /* ─────────────────────────── 按钮 ─────────────────────────── */
+        .ar-btn {
+          display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+          border: 0; border-radius: var(--ar-r-sm); padding: 6px 13px;
+          font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
+          white-space: nowrap; color: inherit; background: var(--ar-surface-2);
+          transition: background-color var(--ar-dur) var(--ar-ease),
+                      filter var(--ar-dur) var(--ar-ease),
+                      transform .1s var(--ar-ease),
+                      opacity var(--ar-dur) var(--ar-ease);
+        }
+        .ar-btn:active:not(:disabled) { transform: scale(.97); }
+        .ar-btn:disabled { opacity: .35; cursor: default; transform: none; }
+        .ar-btn.primary {
+          background: var(--ar-accent); color: #fff; font-weight: 600;
+          box-shadow: 0 1px 3px rgba(10, 132, 255, .28);
+        }
+        .ar-btn.tonal { background: var(--ar-surface-3); }
+        .ar-btn.ghost { background: transparent; opacity: .6; padding: 6px 10px; }
+        .ar-btn.danger { color: var(--ar-danger); }
+        .ar-btn.icon { padding: 6px; width: 30px; }
+        @media (hover: hover) and (pointer: fine) {
+          .ar-btn:hover:not(:disabled) { background: var(--ar-surface-3); }
+          .ar-btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--ar-accent); }
+          .ar-btn.ghost:hover:not(:disabled) { background: var(--ar-surface-2); opacity: .95; }
+          .ar-btn.danger:hover:not(:disabled) { background: var(--ar-danger-soft); }
+          .ar-item:hover { background: var(--ar-surface-2); }
+        }
 
-/* ---- 键值行 ---- */
-.ar-kv { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
-.ar-kv > .k { flex: 0 0 55px; opacity: .55; }
-.ar-kv > .v { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+        /* ─────────────────────────── 表单 ─────────────────────────── */
+        .ar-field { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; align-items: center; }
+        .ar-field.top { align-items: start; }
+        .ar-field > label { font-size: 12px; opacity: .58; letter-spacing: .01em; }
+        .ar-field.top > label { padding-top: 8px; }
+        .ar-in, .ar-sel, .ar-ta {
+          width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: inherit;
+          background: var(--ar-surface-2); border: 0; border-radius: var(--ar-r-sm);
+          padding: 7px 11px; outline: 2px solid transparent; outline-offset: -1px;
+          transition: outline-color var(--ar-dur) var(--ar-ease), background-color var(--ar-dur) var(--ar-ease);
+        }
+        .ar-in, .ar-sel { height: 32px; padding-top: 0; padding-bottom: 0; }
+        .ar-sel { cursor: pointer; }
+        .ar-ta {
+          min-height: 64px; resize: vertical;
+          font-family: var(--ar-mono); font-size: 12px; line-height: 1.6;
+        }
+        .ar-in:focus, .ar-sel:focus, .ar-ta:focus {
+          outline-color: var(--ar-accent); background: var(--ar-surface-1);
+        }
+        .ar-in::placeholder, .ar-ta::placeholder { color: inherit; opacity: .34; }
+        .ar-check { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12.5px; }
+        .ar-check input {
+          width: 15px; height: 15px; margin: 0; flex: none;
+          accent-color: var(--ar-accent); cursor: pointer;
+        }
+        .ar-hint { font-size: 11.5px; opacity: .52; line-height: 1.6; }
 
-/* ---- 服务详情 / 实时日志 ---- */
-.ar-detail { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
-.ar-detail-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ar-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ar-success); }
-.ar-dot.off { background: var(--ar-danger); }
-/* 已忽略的服务整体压暗，但仍可操作（取消忽略） */
-.ar-ignored { opacity: .55; }
-/* 日志容器：宽度必须被父级约束住，否则 flex 的 min-width:auto 会让它按内容撑开，
-   看起来就像「不换行」（踩过：只设 white-space:pre-wrap 但父级没 min-width:0 时无效）。 */
-.ar-log { margin: 0; padding: 10px 11px; border-radius: var(--ar-r-ctrl); width: 100%; box-sizing: border-box;
-  background: var(--ar-surface-strong); font-family: var(--ar-mono); font-size: 11.5px; line-height: 1.62;
-  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
-  max-height: 58vh; min-height: 140px; overflow-y: auto; overflow-x: hidden; tab-size: 4; }
-.ar-log.nowrap { white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto; }
-.ar-log:empty::before { content: '（暂无日志输出）'; opacity: .45; }
+        /* ─────────────────────────── 提示条 ─────────────────────────── */
+        .ar-banner {
+          display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px;
+          border-radius: var(--ar-r-md); font-size: 12.5px; line-height: 1.5;
+          background: var(--ar-surface-2); border-left: 3px solid transparent;
+        }
+        .ar-banner > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+        .ar-banner > .ar-x {
+          flex: none; margin-left: auto; align-self: center;
+          appearance: none; -webkit-appearance: none; border: 0 none; background: none; box-shadow: none;
+          color: inherit; cursor: pointer; font-family: inherit; font-size: 15px; line-height: 1;
+          padding: 0 1px 2px; border-radius: 4px; opacity: .5;
+          transition: opacity .16s var(--ar-ease);
+        }
+        .ar-banner > .ar-x:hover { opacity: .95; }
+        .ar-banner > .ar-x:focus-visible { outline: 1px solid currentColor; outline-offset: 1px; opacity: .95; }
+        .ar-banner.err { color: var(--ar-danger); background: var(--ar-danger-soft); border-left-color: var(--ar-danger); }
+        .ar-banner.ok { color: var(--ar-success); background: var(--ar-success-soft); border-left-color: var(--ar-success); }
 
-@media (prefers-reduced-motion: reduce) {
-  .ar-root * { transition: none !important; animation: none !important; }
-}
+        /* ─────────────────────────── 响应查看 ─────────────────────────── */
+        .ar-pre {
+          margin: 0; padding: 12px; border-radius: var(--ar-r-md);
+          background: var(--ar-surface-2); font-family: var(--ar-mono); font-size: 12px; line-height: 1.6;
+          white-space: pre-wrap; overflow-wrap: anywhere; max-height: 340px; overflow: auto;
+          tab-size: 2;
+        }
+
+        /* 响应查看的切换条（注意：不叫 ar-seg，避免和一级标题胶囊冲突） */
+        .ar-switch {
+          display: flex; gap: 2px; padding: 2px;
+          background: var(--ar-surface-2); border-radius: var(--ar-r-sm);
+        }
+        .ar-switch > button {
+          border: 0; background: transparent; color: inherit; cursor: pointer;
+          font: inherit; font-size: 11.5px; font-weight: 500;
+          padding: 4px 10px; border-radius: 6px; opacity: .58;
+          transition: background-color var(--ar-dur) var(--ar-ease), opacity var(--ar-dur) var(--ar-ease);
+        }
+        .ar-switch > button:hover { opacity: .88; }
+        .ar-switch > button.on {
+          opacity: 1; font-weight: 600; background: var(--ar-elevated);
+          box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+        }
+
+        /* ─────────────────────────── 空态 ─────────────────────────── */
+        .ar-empty {
+          display: flex; flex-direction: column; align-items: center; gap: 8px;
+          padding: 36px 18px; text-align: center;
+        }
+        .ar-empty-icon {
+          font-size: 26px; opacity: .26; line-height: 1;
+          width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+          border-radius: 50%; background: var(--ar-surface-1);
+        }
+        .ar-empty-title { font-size: 13.5px; font-weight: 600; }
+        .ar-empty-hint { font-size: 12px; opacity: .52; line-height: 1.65; max-width: 250px; }
+
+        /* ─────────────────────────── 表格 ─────────────────────────── */
+        .ar-table-wrap {
+          width: 100%; overflow-x: auto; border-radius: var(--ar-r-md);
+          background: var(--ar-surface-1); border: 1px solid var(--ar-sep-soft);
+        }
+        .ar-table { border-collapse: collapse; width: 100%; font-size: 12px; font-family: var(--ar-mono); }
+        .ar-table th {
+          text-align: left; font-weight: 600; padding: 8px 11px; white-space: nowrap;
+          border-bottom: 1px solid var(--ar-sep); opacity: .62;
+          position: sticky; top: 0; background: var(--ar-surface-2);
+        }
+        .ar-table td {
+          padding: 7px 11px; border-bottom: 1px solid var(--ar-sep-soft);
+          white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ar-table tbody tr:last-child td { border-bottom: none; }
+        .ar-table tbody tr:hover td { background: var(--ar-surface-2); }
+
+        /* ─────────────────────────── 进度 ─────────────────────────── */
+        .ar-batch {
+          display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+          border-radius: var(--ar-r-lg); background: var(--ar-surface-1);
+          border: 1px solid var(--ar-sep-soft);
+        }
+        .ar-batch-top { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
+        .ar-batch-bar { height: 5px; border-radius: var(--ar-r-pill); background: var(--ar-surface-3); overflow: hidden; }
+        .ar-batch-bar > i {
+          display: block; height: 100%; border-radius: var(--ar-r-pill);
+          background: var(--ar-accent); transition: width .3s var(--ar-ease);
+        }
+        .ar-batch-line { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
+        .ar-batch-line > .n { flex: 0 0 auto; font-family: var(--ar-mono); font-weight: 700; }
+        .ar-batch-line.ok > .n { color: var(--ar-success); }
+        .ar-batch-line.err > .n { color: var(--ar-danger); }
+        .ar-batch-line.skip > .n { color: var(--ar-warn); }
+
+        /* ─────────────────────────── 键值行 ─────────────────────────── */
+        .ar-kv { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+        .ar-kv > .k { flex: 0 0 58px; opacity: .5; }
+        .ar-kv > .v { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+
+        /* ─────────────────────────── 服务详情 / 日志 ─────────────────────────── */
+        .ar-detail { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+        .ar-detail-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .ar-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ar-success); }
+        .ar-dot.off { background: var(--ar-danger); }
+        .ar-ignored { opacity: .5; }
+        /* 日志容器：父级必须有 min-width:0，否则 flex 会按内容撑开导致「不换行」 */
+        .ar-log {
+          margin: 0; padding: 12px; border-radius: var(--ar-r-md); width: 100%; box-sizing: border-box;
+          background: var(--ar-surface-2); font-family: var(--ar-mono); font-size: 11.5px; line-height: 1.65;
+          white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+          max-height: 58vh; min-height: 150px; overflow-y: auto; overflow-x: hidden; tab-size: 4;
+        }
+        .ar-log.nowrap { white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto; }
+        .ar-log:empty::before { content: '（暂无日志输出）'; opacity: .42; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .ar-root * { transition: none !important; animation: none !important; }
+        }
+
 `;
 
         /**
@@ -547,7 +686,7 @@ window.__ModuleLoader__.load({
                     h('input', { type: 'checkbox', checked: value.isLogin, onChange: (e) => set('isLogin', e.target.checked) }),
                     h('span', {}, '这是登录接口，调用成功后保存 token')),
                 value.isLogin
-                    ? h('div', { className: 'ar-card', style: { background: 'var(--ar-surface-strong)' } },
+                    ? h('div', { className: 'ar-card', style: { background: 'var(--ar-surface-2)' } },
                         h(Field, { label: 'token 路径' }, h('input', { className: 'ar-in', value: value.tokenPath, placeholder: '响应 JSON 路径，如 data.token', onChange: (e) => set('tokenPath', e.target.value) })),
                         h(Field, { label: '注入头' }, h('input', { className: 'ar-in', value: value.authHeader, placeholder: 'Authorization', onChange: (e) => set('authHeader', e.target.value) })),
                         h(Field, { label: '前缀' }, h('input', { className: 'ar-in', value: value.prefix, placeholder: 'Bearer （不需要就留空）', onChange: (e) => set('prefix', e.target.value) })),
@@ -666,24 +805,77 @@ window.__ModuleLoader__.load({
         /**
          * 数据库连接编辑表单。
          *
-         * 密码框用 type=password 且编辑时不回填：服务端只回传掩码，
+         * 三种录入方式：
+         *   - sqlite：只填文件路径
+         *   - 分字段：host / 端口 / 库名 / 用户名 / 密码
+         *   - URL：整条连接串（dm://user:pass@host:port?opts）
+         *
+         * 端口输入框单独占一行、不固定像素宽——之前和 host 挤在一行、
+         * 宽度写死 90px，在窄面板里被压变形（用户报的「端口位置有 bug」）。
+         *
+         * 密码框 type=password 且编辑时不回填：服务端只回传掩码，
          * 留空表示「不修改密码」，避免编辑别处字段时把密码清掉。
          */
         function EditDbForm(props) {
-            const { value, onChange, onSave, onCancel, busy } = props;
+            const { value, onChange, onSave, onTest, onCancel, busy, testing, testResult } = props;
             const set = (key, next) => onChange({ ...value, [key]: next });
             const isSqlite = value.type === 'sqlite';
-            const needsHost = !isSqlite;
+            const urlMode = value.urlMode === true;
+
+            /** 把表单值整理成后端要的形状（保存与试连共用） */
+            const toPayload = () => {
+                let extra;
+                const text = String(value.extraText || '').trim();
+                if (text !== '') {
+                    try {
+                        extra = JSON.parse(text);
+                    } catch (error) {
+                        window.alert(`额外参数不是合法 JSON：${error.message}`);
+                        return undefined;
+                    }
+                }
+                const base = {
+                    id: value.id || undefined,
+                    name: value.name,
+                    type: value.type,
+                    username: value.username,
+                    // 空密码不传，让后端保留原值
+                    password: value.password === '' ? undefined : value.password,
+                    extra,
+                };
+                if (isSqlite) return { ...base, database: value.database };
+                if (urlMode) return { ...base, connectString: value.connectString };
+                return {
+                    ...base,
+                    host: value.host,
+                    port: value.port === '' ? undefined : Number(value.port),
+                    database: value.database,
+                };
+            };
+
+            const runTest = () => {
+                const payload = toPayload();
+                if (payload === undefined) return;
+                if (onTest) onTest(payload);
+            };
+
             return h('div', { className: 'ar-card' },
                 h('div', { className: 'ar-name' }, value.id ? `编辑连接 ${value.name}` : '新增数据库连接'),
-                h(Field, { label: '名称' }, h('input', {
-                    className: 'ar-in', value: value.name, placeholder: '如 本地 MySQL',
-                    onChange: (e) => set('name', e.target.value),
-                })),
-                h(Field, { label: '类型' }, h('select', {
-                    className: 'ar-sel', value: value.type,
-                    onChange: (e) => set('type', e.target.value),
-                }, ['sqlite', 'mysql', 'postgres', 'oracle', 'dm'].map((t) => h('option', { key: t, value: t }, t)))),
+
+                // 名称 + 类型同一行（两个都不会太窄）
+                h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '8px' } },
+                    h('div', { style: { flex: '1 1 140px', minWidth: '120px' } },
+                        h(Field, { label: '名称' }, h('input', {
+                            className: 'ar-in', value: value.name, placeholder: '如 本地 MySQL',
+                            onChange: (e) => set('name', e.target.value),
+                        }))),
+                    h('div', { style: { flex: '0 1 130px', minWidth: '100px' } },
+                        h(Field, { label: '类型' }, h('select', {
+                            className: 'ar-sel', value: value.type,
+                            onChange: (e) => set('type', e.target.value),
+                        }, DB_TYPE_OPTIONS.map((t) => h('option', { key: t.value, value: t.value }, t.label)))))),
+
+                // sqlite：只有文件路径
                 isSqlite
                     ? h(Field, { label: '文件路径' }, h('input', {
                         className: 'ar-in ar-mono', value: value.database,
@@ -691,66 +883,95 @@ window.__ModuleLoader__.load({
                         onChange: (e) => set('database', e.target.value),
                     }))
                     : h('div', null,
-                        h('div', { className: 'ar-row' },
-                            h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+                        // 录入方式切换（URL / 分字段）
+                        h(Field, { label: '录入方式' }, h('div', { className: 'ar-segmented', style: { padding: '0' } },
+                            [{ id: false, label: '分字段' }, { id: true, label: 'URL' }].map((opt) => h('button', {
+                                key: String(opt.id),
+                                className: urlMode === opt.id ? 'ar-seg on' : 'ar-seg',
+                                onClick: () => set('urlMode', opt.id),
+                            }, opt.label)))),
+
+                        urlMode
+                            ? h('div', null,
+                                h(Field, { label: '连接 URL', top: true }, h('textarea', {
+                                    className: 'ar-ta ar-mono', value: value.connectString,
+                                    placeholder: value.type === 'dm'
+                                        ? 'dm://user:password@host:5236'
+                                        : `${value.type}://user:password@host:port/database`,
+                                    style: { minHeight: '52px' },
+                                    onChange: (e) => set('connectString', e.target.value),
+                                })),
+                                h('div', { className: 'ar-hint' }, '整条串会加密保存，界面只显示打码后的样子。'))
+                            : h('div', null,
+                                // host 单独一行，不再和端口挤
                                 h(Field, { label: 'host' }, h('input', {
                                     className: 'ar-in ar-mono', value: value.host, placeholder: '127.0.0.1',
                                     onChange: (e) => set('host', e.target.value),
-                                }))),
-                            h('div', { style: { flex: '0 0 90px' } },
-                                h(Field, { label: '端口' }, h('input', {
-                                    className: 'ar-in ar-mono', value: value.port, placeholder: '默认',
-                                    onChange: (e) => set('port', e.target.value),
-                                })))),
-                        h(Field, { label: '数据库' }, h('input', {
-                            className: 'ar-in ar-mono', value: value.database, placeholder: '库名',
-                            onChange: (e) => set('database', e.target.value),
-                        })),
-                        h(Field, { label: '用户名' }, h('input', {
-                            className: 'ar-in', value: value.username, placeholder: 'root',
-                            onChange: (e) => set('username', e.target.value),
-                        })),
-                        h(Field, { label: '密码' }, h('input', {
-                            className: 'ar-in', type: 'password', value: value.password,
-                            placeholder: value.id ? '留空表示不修改' : '',
-                            onChange: (e) => set('password', e.target.value),
-                        }))),
+                                })),
+                                // 端口与库名同一行，但都允许换行收缩
+                                h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '8px' } },
+                                    h('div', { style: { flex: '0 1 120px', minWidth: '90px' } },
+                                        h(Field, { label: '端口' }, h('input', {
+                                            className: 'ar-in ar-mono', value: value.port,
+                                            placeholder: String(DEFAULT_PORT_HINT[value.type] || '默认'),
+                                            inputMode: 'numeric',
+                                            onChange: (e) => set('port', e.target.value.replace(/[^\d]/g, '')),
+                                        }))),
+                                    h('div', { style: { flex: '1 1 150px', minWidth: '110px' } },
+                                        h(Field, { label: '数据库' }, h('input', {
+                                            className: 'ar-in ar-mono', value: value.database, placeholder: '库名（可选）',
+                                            onChange: (e) => set('database', e.target.value),
+                                        })))),
+                                h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '8px' } },
+                                    h('div', { style: { flex: '1 1 140px', minWidth: '110px' } },
+                                        h(Field, { label: '用户名' }, h('input', {
+                                            className: 'ar-in', value: value.username, placeholder: 'root',
+                                            onChange: (e) => set('username', e.target.value),
+                                        }))),
+                                    h('div', { style: { flex: '1 1 140px', minWidth: '110px' } },
+                                        h(Field, { label: '密码' }, h('input', {
+                                            className: 'ar-in', type: 'password', value: value.password,
+                                            placeholder: value.id ? '留空表示不修改' : '',
+                                            onChange: (e) => set('password', e.target.value),
+                                        })))))),
+
                 h(Field, { label: '额外参数', top: true }, h('textarea', {
                     className: 'ar-ta ar-mono', value: value.extraText,
                     placeholder: '可选，JSON：{"ssl":true}',
                     onChange: (e) => set('extraText', e.target.value),
                 })),
+
+                // 试连结果就地显示，不用保存也能验证
+                testResult
+                    ? h('div', {
+                        className: 'ar-hint',
+                        style: { color: testResult.ok ? 'var(--ar-success)' : 'var(--ar-danger)' },
+                    }, testResult.ok
+                        ? `✓ 连接成功${testResult.durationMs ? `（${testResult.durationMs}ms）` : ''}`
+                        : `✗ ${testResult.message || '连接失败'}`)
+                    : null,
+
                 h('div', { className: 'ar-hint' }, '密码会加密后保存，列表与工具输出只显示掩码。'),
-                h('div', { className: 'ar-row' },
+                h('div', { className: 'ar-row', style: { flexWrap: 'wrap' } },
                     h('button', {
                         className: 'ar-btn primary',
-                        disabled: Boolean(busy),
+                        // 保存只受「保存中」影响；试连进行中仍可保存
+                        disabled: busy === 'save',
                         onClick: () => {
-                            // 额外参数是 JSON，解析失败就拦在这里，别把坏值发到后端
-                            let extra;
-                            const text = String(value.extraText || '').trim();
-                            if (text !== '') {
-                                try {
-                                    extra = JSON.parse(text);
-                                } catch (error) {
-                                    window.alert(`额外参数不是合法 JSON：${error.message}`);
-                                    return;
-                                }
-                            }
-                            onSave({
-                                id: value.id || undefined,
-                                name: value.name,
-                                type: value.type,
-                                host: value.host,
-                                port: value.port === '' ? undefined : Number(value.port),
-                                database: value.database,
-                                username: value.username,
-                                // 空密码不传，让后端保留原值
-                                password: value.password === '' ? undefined : value.password,
-                                extra,
-                            });
+                            const payload = toPayload();
+                            if (payload === undefined) return;
+                            onSave(payload);
                         },
-                    }, '保存'),
+                    }, busy === 'save' ? '保存中…' : '保存'),
+                    // 新增时也能试连：把当前表单值发给后端，不落盘。
+                    // 只有「测试」按钮自己 disabled，不影响保存/取消。
+                    h('button', {
+                        className: 'ar-btn tonal',
+                        disabled: testing || busy === 'save',
+                        onClick: runTest,
+                        title: '用当前填写的内容试连，不需要先保存',
+                    }, testing ? '测试中…' : '测试'),
+                    h('span', { className: 'ar-spacer' }),
                     h('button', { className: 'ar-btn ghost', onClick: onCancel }, '取消')));
         }
 
@@ -1065,7 +1286,7 @@ window.__ModuleLoader__.load({
                     typeof payload.durationMs === 'number' ? h('span', { className: 'ar-hint ar-mono' }, `${payload.durationMs} ms`) : null,
                     h('span', { className: 'ar-hint ar-mono' }, byteSize(json !== undefined ? json : payload.body)),
                     h('span', { className: 'ar-spacer' }),
-                    h('div', { className: 'ar-seg' }, views.map((v) => h('button', { key: v.id, className: view === v.id ? 'on' : '', onClick: () => setView(v.id) }, v.label))),
+                    h('div', { className: 'ar-switch' }, views.map((v) => h('button', { key: v.id, className: view === v.id ? 'on' : '', onClick: () => setView(v.id) }, v.label))),
                     h('button', { className: 'ar-btn ghost icon', title: '复制这段内容', onClick: () => copyText(content) }, '⧉'),
                     h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: onClose }, '×')),
                 h('div', { className: 'ar-row', style: { minWidth: 0 } },
@@ -1121,6 +1342,12 @@ window.__ModuleLoader__.load({
             const [dbDbBusy, setDbDbBusy] = React.useState('');
             /** 数据库子页的一级标题：conn（连接）/ sql / schema（表结构） */
             const [dbSection, setDbSection] = React.useState('conn');
+            /** 表单试连结果（null = 没试过） */
+            const [dbTestResult, setDbTestResult] = React.useState(null);
+            /** 项目授权视图：{ projectKey, connections: [{id,name,type,target,level}], authorized, total } */
+            const [dbAccess, setDbAccess] = React.useState(null);
+            /** 表单试连进行中（独立状态，不锁其它按钮） */
+            const [dbTesting, setDbTesting] = React.useState(false);
 
             const headers = React.useMemo(() => ({ 'Content-Type': 'application/json', 'x-dsh-session-id': sessionId }), [sessionId]);
             const get = React.useCallback(async (path) => {
@@ -1556,6 +1783,35 @@ window.__ModuleLoader__.load({
              * 数据库连接是跨项目的（同一套库常被多个项目共用），
              * 所以这里不跟着「接口」页的项目页签走，始终操作全局连接列表。
              */
+            /**
+             * 项目授权视图：哪些连接对「当前项目」开放、各是什么等级。
+             * 这是模型能否查到数据的总开关——未授权的连接连 describe 都不会出现。
+             */
+            const refreshDbAccess = React.useCallback(async () => {
+                try {
+                    const data = await request('db/access', { headers });
+                    if (data.ok === false) return;
+                    setDbAccess(data);
+                } catch {
+                    /* 授权视图加载失败不阻塞主流程 */
+                }
+            }, [headers]);
+
+            const setDbAccessLevel = async (connectionId, level) => {
+                setDbDbBusy('access');
+                setDbError('');
+                try {
+                    const payload = await post('db/access', { connection_id: connectionId, level });
+                    if (payload.ok === false) throw new Error(payload.message || '设置授权失败');
+                    setNotice(`已设为「${level === 'none' ? '未授权' : level === 'readonly' ? '只读' : '读写'}」`);
+                    await refreshDbAccess();
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
             const refreshDb = React.useCallback(async () => {
                 try {
                     const data = await request('db', { headers });
@@ -1585,8 +1841,9 @@ window.__ModuleLoader__.load({
             React.useEffect(() => {
                 if (!visible) return undefined;
                 refreshDb();
+                refreshDbAccess();
                 return undefined;
-            }, [visible, refreshDb]);
+            }, [visible, refreshDb, refreshDbAccess]);
 
             const loadDbTables = React.useCallback(async (connectionId) => {
                 if (!connectionId) { setDbTables([]); return; }
@@ -1632,17 +1889,43 @@ window.__ModuleLoader__.load({
                 }
             };
 
+            /** 列表行的测试：同样用独立状态，不锁其它按钮 */
             const dbTest = async (item) => {
-                setDbDbBusy('test');
+                setDbTesting(true);
                 setDbError('');
                 try {
-                    const payload = await post('db/test', { connection_id: item.id });
+                    const payload = await post('db/test', { connection_id: item.id, timeout_ms: 15000 });
                     if (payload.ok) setNotice(`连接「${item.name}」正常（${payload.durationMs}ms）`);
                     else setDbError(payload.message || '连接失败');
                 } catch (e) {
                     setDbError(e.message);
                 } finally {
-                    setDbDbBusy('');
+                    setDbTesting(false);
+                }
+            };
+
+            /**
+             * 表单里的试连：把当前填写的内容发给后端，**不落盘**。
+             * 新增时不用先保存就能验证连通性（用户报的「填完没法测试」）。
+             */
+            /**
+             * 表单试连：把当前填写的内容发给后端，**不落盘**。
+             *
+             * 用独立的 dbTesting 而不是全局 dbDbBusy：达梦连不上时要等十几秒，
+             * 若共用全局 busy，期间「保存/取消/编辑」全被 disabled，
+             * 用户会以为界面卡死了（实际是按钮被锁）。
+             */
+            const dbTestDraft = async (draft) => {
+                setDbTesting(true);
+                setDbError('');
+                setDbTestResult(null);
+                try {
+                    const payload = await post('db/test', { connection: draft });
+                    setDbTestResult(payload);
+                } catch (e) {
+                    setDbTestResult({ ok: false, message: e.message });
+                } finally {
+                    setDbTesting(false);
                 }
             };
 
@@ -1948,7 +2231,8 @@ window.__ModuleLoader__.load({
             const activeConn = dbConnections.find((item) => item.id === dbActive) || null;
             /** 数据库子页的一级标题：独立小胶囊，一次只看一块（和参考图的「连接…/SQL…/数据…」一致） */
             const dbSections = [
-                { id: 'conn', label: '连接', count: dbConnections.length },
+                { id: 'conn', label: '连接管理', count: dbConnections.length },
+                { id: 'access', label: '项目授权', count: dbAccess ? dbAccess.authorized : 0 },
                 { id: 'sql', label: 'SQL', count: 0 },
                 { id: 'schema', label: '表结构', count: dbTables.length },
             ];
@@ -1971,10 +2255,11 @@ window.__ModuleLoader__.load({
                         h('button', {
                             className: 'ar-btn tonal',
                             disabled: dbDbBusy !== '',
-                            onClick: () => setDbForm({
+                            onClick: () => { setDbTestResult(null); setDbForm({
                                 id: '', name: '', type: 'sqlite', host: '', port: '',
                                 database: '', username: '', password: '', extraText: '',
-                            }),
+                                connectString: '', urlMode: false,
+                            }); },
                         }, '新增连接'),
                         h('span', { className: 'ar-spacer' }),
                         h('button', { className: 'ar-btn ghost icon', disabled: dbDbBusy !== '', title: '重新读取连接列表', onClick: refreshDb }, '↻')),
@@ -1992,21 +2277,80 @@ window.__ModuleLoader__.load({
                         },
                             h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '5px' } },
                                 h('span', { className: 'ar-badge brand' }, item.type),
+                                item.urlMode ? h('span', { className: 'ar-badge' }, 'URL') : null,
                                 h('span', { className: 'ar-name ar-cut', style: { flex: '0 1 auto' } }, item.name),
                                 item.id === dbActive ? h('span', { className: 'ar-badge' }, '当前') : null),
-                            h('div', { className: 'ar-hint ar-mono ar-cut', title: item.type === 'sqlite' ? item.file : `${item.host}:${item.port}/${item.database}` },
-                                item.type === 'sqlite' ? (item.file || ':memory:') : `${item.host}:${item.port}/${item.database}`),
+                            h('div', {
+                                className: 'ar-hint ar-mono ar-cut',
+                                title: item.urlMode ? (item.connectString || '') : (item.type === 'sqlite' ? item.file : `${item.host}:${item.port}/${item.database}`),
+                            }, item.urlMode
+                                ? (item.connectString || '(URL 未填)')
+                                : (item.type === 'sqlite' ? (item.file || ':memory:') : `${item.host}:${item.port}/${item.database}`)),
                             h('div', { className: 'ar-row', style: { flexWrap: 'wrap' } },
                                 h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '', onClick: () => dbTest(item) }, '测试'),
-                                h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '', onClick: () => setDbForm({
+                                h('button', { className: 'ar-btn ghost', disabled: dbDbBusy !== '', onClick: () => { setDbTestResult(null); setDbForm({
                                     id: item.id, name: item.name, type: item.type, host: item.host,
                                     port: item.port ? String(item.port) : '', database: item.database,
                                     username: item.username, password: '', extraText: Object.keys(item.extra || {}).length ? JSON.stringify(item.extra, null, 2) : '',
-                                }) }, '编辑'),
+                                    // URL 模式回显打码后的串，留空表示不改（后端会沿用原串）
+                                    connectString: item.connectString || '', urlMode: Boolean(item.urlMode),
+                                }); } }, '编辑'),
                                 h('span', { className: 'ar-spacer' }),
                                 h('button', { className: 'ar-btn ghost danger', disabled: dbDbBusy !== '', onClick: () => dbDelete(item) }, '删除'))))),
 
-                    dbForm ? h(EditDbForm, { value: dbForm, onChange: setDbForm, onSave: dbSave, onCancel: () => setDbForm(null), busy: dbDbBusy }) : null)
+                    dbForm ? h(EditDbForm, {
+                        value: dbForm,
+                        onChange: setDbForm,
+                        onSave: dbSave,
+                        onTest: dbTestDraft,
+                        testResult: dbTestResult,
+                        onCancel: () => { setDbForm(null); setDbTestResult(null); },
+                        busy: dbDbBusy,
+                        testing: dbTesting,
+                    }) : null)
+                    : null,
+
+                // ---- 项目授权 ----
+                dbSection === 'access' ? h('div', { className: 'ar-pane' },
+                    h('div', { className: 'ar-hint' },
+                        '为当前项目授权连接。只读 = 仅查询/浏览，读写 = 允许执行写语句。未授权的连接在业务操作中一律拒绝。'),
+                    h('div', { className: 'ar-row' },
+                        h('span', { className: 'ar-hint' }, `项目：${(dbAccess && dbAccess.projectKey) || '（加载中）'}`),
+                        h('span', { className: 'ar-spacer' }),
+                        h('button', { className: 'ar-btn ghost icon', disabled: dbDbBusy !== '', title: '刷新授权状态', onClick: refreshDbAccess }, '↻')),
+                    h('div', { className: 'ar-hint' },
+                        `已授权 ${dbAccess ? dbAccess.authorized : 0}/${dbAccess ? dbAccess.total : 0} 个连接`),
+
+                    !dbAccess || dbAccess.connections.length === 0
+                        ? h(Empty, {
+                            icon: '🔐',
+                            title: '还没有可授权的连接',
+                            hint: '先到「连接管理」里新增一个连接，再回到这里授权给当前项目。',
+                        })
+                        : h('div', { className: 'ar-group' }, dbAccess.connections.map((item) => h('div', {
+                            key: item.id,
+                            className: 'ar-item',
+                        },
+                            h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '5px' } },
+                                h('span', { className: 'ar-badge brand' }, item.type),
+                                h('span', { className: 'ar-name ar-cut', style: { flex: '0 1 auto' } }, item.name),
+                                item.level !== 'none' ? h('span', { className: 'ar-badge' }, item.level === 'readonly' ? '只读' : '读写') : null),
+                            h('div', { className: 'ar-hint ar-mono ar-cut', title: item.target || '' }, item.target || ''),
+                            // 三档授权切换：未授权 / 只读 / 读写
+                            h('div', { className: 'ar-segmented', style: { padding: '0' } },
+                                [
+                                    { level: 'none', label: '未授权' },
+                                    { level: 'readonly', label: '只读' },
+                                    { level: 'readwrite', label: '读写' },
+                                ].map((opt) => h('button', {
+                                    key: opt.level,
+                                    className: item.level === opt.level ? 'ar-seg on' : 'ar-seg',
+                                    disabled: dbDbBusy !== '',
+                                    onClick: () => setDbAccessLevel(item.id, opt.level),
+                                }, opt.label))))))
+                    ,
+                    h('div', { className: 'ar-hint' },
+                        '读写权限也**不能**执行 DROP / TRUNCATE / 无 WHERE 的 DELETE 等毁灭性操作——这些一律拒绝，请到数据库客户端人工处理。'))
                     : null,
 
                 // ---- SQL ----

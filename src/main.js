@@ -19,23 +19,48 @@ import { ApiRunnerService, asObject, toText } from './ops.js';
 import { ProjectStore } from './project-store.js';
 import { JavaRunner } from './java-runner.js';
 import { SettingsStore } from './settings.js';
+import { normalizeProjectKey } from './util.js';
 
 export const inject = ['webServer', 'sessions', 'tools', 'connection', 'systemPrompt'];
 
-const TOOL_DESCRIPTION = `开发联调工具（dsh-api-runner）：按配置调用后端 HTTP 接口、启停本地服务、增量读取日志。
+/**
+ * 会话 cwd → 项目 key。数据库授权按这个 key 归档。
+ * 没有 cwd 时回落 'default'，和 ProjectStore 的约定一致。
+ */
+function projectKeyOf(cwd) {
+    return normalizeProjectKey(String(cwd || '')) || 'default';
+}
+
+const TOOL_DESCRIPTION = `开发联调工具（dsh-api-runner）：按配置调用后端 HTTP 接口、启停本地服务、增量读取日志、直接查数据库。
 
 典型用法（改完后端代码后自测）：
-1. action=describe —— 先看有哪些接口/服务/日志可用（含每个接口需要的参数名）。
+1. action=describe —— 先看有哪些接口/服务/日志/数据库可用（含每个接口需要的参数名）。
 2. action=service + service_action=restart —— 重启本地服务（managed 模式由插件托管进程；
    observe 模式下插件不托管，需你到 IDEA 里重启，然后用 service_action=wait 等就绪）。
 3. action=log + pattern —— 增量读日志；或 action=wait_log 等启动完成/报错特征出现。
 4. action=call —— 调用接口，params 里的键会替换 URL 里的 {name} 并拼进 query/body。
 5. action=verify —— 一条命令串起「重启 → 读日志 → 调接口」，适合改完后端后自检。
+6. action=db —— 直接查数据库：db_action=list_connections 看有哪些库；
+   list_tables / describe_table 看结构；query 执行 SQL。
+
+安全约束（务必遵守）：
+- 只有**已被当前项目授权**的连接才会出现在 describe 里；未授权的连接查不到也调不动。
+- 模型侧**永远只读**：只允许 SELECT / SHOW / DESCRIBE / EXPLAIN 等查询。
+  传 db_readonly=false 也不会放开写操作——写数据只能由人在面板里做。
+- DROP / TRUNCATE / 无 WHERE 的 DELETE 等毁灭性操作一律拒绝。
+
+什么时候该用 db：
+- 需要确认数据是否真的写进去了（接口返回成功但不确认落库）。
+- 排查数据问题：某条记录状态不对、关联数据缺失、字段值与预期不符。
+- 需要先了解表结构才能写对查询时，先 describe_table 再 query。
+遇到「数据对不对」这类问题就主动查，不用等用户提醒。
 
 注意：
 - 日志游标按 logId 持久化，第一次读只取文件末尾一段；要全量请传 reset=true。
 - 服务重启会 kill 整个进程树后重新拉起（managed）；失败时返回 exit code 与健康检查明细。
-- 接口响应体默认截断到 32KB，可用 max_bytes 调整；请求头在返回里已脱敏。`;
+- 接口响应体默认截断到 32KB，可用 max_bytes 调整；请求头在返回里已脱敏。
+- SQL 只允许单条语句；用 db_params 传参，不要拼接字符串（防注入）。
+- 数据库连接是跨项目的全局配置，但**访问权按项目隔离**。`;
 
 const PARAMETERS = {
     type: 'object',
@@ -88,12 +113,12 @@ const PARAMETERS = {
         },
         db_readonly: {
             type: 'boolean',
-            description: 'db_action=query 时是否只读（默认 true，拒绝 INSERT/UPDATE/DELETE/DDL）',
+            description: '（已废弃，保留仅为兼容）模型侧永远只读，传 false 也不会放开写操作。写数据只能由人在面板里操作。',
         },
         connection: {
             type: 'object',
             additionalProperties: true,
-            description: '连接配置（db_action=save/test 用）：{ id?, name, type(sqlite|mysql|postgres|oracle), host, port, database, username, password, extra }',
+            description: '连接配置（db_action=save/test 用）：{ id?, name, type(sqlite|mysql|postgres|oracle|dm), host, port, database, username, password, connectString?, extra }。connectString 是 URL 模式（如 dm://user:pass@host:5236），填了就不用 host/port',
         },
         table: { type: 'string', description: '表名（db_action=describe_table 用）' },
         database: { type: 'string', description: '库名/模式名（db_action=list_tables 用；MySQL 必填）' },
@@ -240,10 +265,15 @@ async function runTool(service, args, projectPath) {
         }
         case 'db': {
             const dbAction = String(args.db_action || 'list_connections');
+            /**
+             * 项目（工作空间）key：授权是按项目走的，所有 db 动作都要带上它。
+             * runTool 的 projectPath 就是会话 cwd，用它派生 key。
+             */
+            const projectKey = projectKeyOf(projectPath);
             if (dbAction === 'list_connections') return service.dbConnections();
             if (dbAction === 'list_databases') {
                 if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=list_databases 需要 connection_id' };
-                return service.dbDatabases(String(args.connection_id));
+                return service.dbDatabases(String(args.connection_id), { projectKey });
             }
             if (dbAction === 'test') {
                 const target = args.connection || args.connection_id;
@@ -279,20 +309,25 @@ async function runTool(service, args, projectPath) {
                 if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=query 需要 connection_id' };
                 if (!args.sql) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=query 需要 sql' };
                 return service.dbQuery(String(args.connection_id), String(args.sql), Array.isArray(args.db_params) ? args.db_params : [], {
-                    // 默认只读：模型直接执行写操作是高风险动作，必须显式关闭
-                    readonly: args.db_readonly !== false,
+                    /**
+                     * 模型侧**永远只读**：不接受 args 里传的 db_readonly=false。
+                     * 写操作只能由人在面板里做（面板走的是另一条带 UI 确认的路径）。
+                     * 这样即使模型被诱导，也删不掉任何数据。
+                     */
+                    readonly: true,
+                    projectKey,
                     maxRows: args.max_lines ? Number(args.max_lines) : undefined,
                     timeoutMs,
                 });
             }
             if (dbAction === 'list_tables') {
                 if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=list_tables 需要 connection_id' };
-                return service.dbTables(String(args.connection_id), args.database ? String(args.database) : '');
+                return service.dbTables(String(args.connection_id), args.database ? String(args.database) : '', { projectKey });
             }
             if (dbAction === 'describe_table') {
                 if (!args.connection_id) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=describe_table 需要 connection_id' };
                 if (!args.table) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=describe_table 需要 table' };
-                return service.dbDescribeTable(String(args.connection_id), String(args.table));
+                return service.dbDescribeTable(String(args.connection_id), String(args.table), { projectKey });
             }
             return { ok: false, code: 'BAD_ACTION', message: `不支持的 db_action: ${dbAction}` };
         }
@@ -414,13 +449,15 @@ export function apply(ctx) {
                         const apis = info.apis.map((api) => `- ${api.id}（${api.method} ${api.url}）${api.params.length ? ` 参数: ${api.params.join(', ')}` : ''}`).join('\n');
                         const services = info.services.map((item) => `- ${item.id}（${item.mode}）${item.name}`).join('\n');
                         const logs = info.logs.map((item) => `- ${item.id} → ${item.path}`).join('\n');
-                        if (!apis && !services && !logs) return '';
+                        const databases = (info.databases || []).map((item) => `- ${item.id}（${item.type}）${item.name} → ${item.target}`).join('\n');
+                        if (!apis && !services && !logs && !databases) return '';
                         return [
                             '# 本地开发联调（dsh-api-runner）',
                             '可用工具 ApiRunner 已配置以下资源；改完后端代码后可用它重启服务、读日志、直接调接口验证。',
                             apis ? `\n接口：\n${apis}` : '',
                             services ? `\n服务：\n${services}` : '',
                             logs ? `\n日志：\n${logs}` : '',
+                            databases ? `\n数据库（可用 action=db 直接查询，默认只读）：\n${databases}\n需要看表结构时用 db_action=list_tables / describe_table；查数据用 db_action=query + sql（用 db_params 传参，别拼字符串）。` : '',
                         ].join('\n');
                     } catch {
                         return '';
@@ -673,7 +710,10 @@ async function handleHttp(req, res, service, projectOf) {
         if (!target || (typeof target === 'string' && target === '')) {
             return send(400, { ok: false, code: 'MISSING_ARGUMENT', message: '需要 connection_id 或 connection 配置' });
         }
-        return send(200, await service.dbTest(target));
+        // timeout_ms 让前端能把等待压到可接受范围（默认 15s，见 DbManager.probeTimeoutMs）
+        return send(200, await service.dbTest(target, {
+            timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
+        }));
     }
     if (route === 'db/save' && req.method === 'POST') {
         const body = await readBody();
@@ -690,25 +730,49 @@ async function handleHttp(req, res, service, projectOf) {
             String(body.sql || ''),
             Array.isArray(body.params) ? body.params : [],
             {
+                /**
+                 * 面板里的写操作需要「项目授权 = readwrite」才放行，
+                 * 且 DROP/TRUNCATE/无 WHERE 的 DELETE 仍会被 DESTRUCTIVE_BLOCKED 拦住。
+                 * readonly 由前端传，但真正的闸门是项目授权等级。
+                 */
                 readonly: body.readonly !== false,
+                projectKey: projectKeyOf(cwd),
                 maxRows: body.max_rows ? Number(body.max_rows) : undefined,
                 timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
             },
         ));
     }
     if (route === 'db/databases' && req.method === 'GET') {
-        return send(200, await service.dbDatabases(String(url.searchParams.get('connection_id') || '')));
+        return send(200, await service.dbDatabases(
+            String(url.searchParams.get('connection_id') || ''),
+            { projectKey: projectKeyOf(cwd) },
+        ));
     }
     if (route === 'db/tables' && req.method === 'GET') {
         return send(200, await service.dbTables(
             String(url.searchParams.get('connection_id') || ''),
             String(url.searchParams.get('database') || ''),
+            { projectKey: projectKeyOf(cwd) },
         ));
     }
     if (route === 'db/table' && req.method === 'GET') {
         return send(200, await service.dbDescribeTable(
             String(url.searchParams.get('connection_id') || ''),
             String(url.searchParams.get('name') || url.searchParams.get('table') || ''),
+            { projectKey: projectKeyOf(cwd) },
+        ));
+    }
+
+    // ---- 数据库项目授权（默认拒绝，必须显式授权） ----
+    if (route === 'db/access' && req.method === 'GET') {
+        return send(200, service.dbAccess(projectKeyOf(cwd)));
+    }
+    if (route === 'db/access' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, service.dbSetAccess(
+            projectKeyOf(body.project_key ? String(body.project_key) : cwd),
+            String(body.connection_id || ''),
+            String(body.level || 'none'),
         ));
     }
 

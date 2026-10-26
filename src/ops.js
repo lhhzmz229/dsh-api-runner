@@ -105,6 +105,33 @@ export class ApiRunnerService {
                 exists: fileExists(log.path),
                 size: fileSize(log.path),
             })),
+            /**
+             * 数据库连接也放进 describe：模型据此知道「有哪些库可查」。
+             *
+             * **只列当前项目已授权的连接**——未授权的连接模型不该看见，
+             * 否则它会反复尝试然后被拒，浪费轮次还误导用户。
+             * 只给 id / 名称 / 类型 / 目标 / 权限等级，不给账号密码。
+             */
+            databases: this.dbManager
+                ? (() => {
+                    const access = this.dbManager.accessOf('default');
+                    return this.dbManager.listConnections()
+                        .map((item) => {
+                            const level = access[item.id] || 'none';
+                            return {
+                                id: item.id,
+                                name: item.name,
+                                type: item.type,
+                                target: item.urlMode
+                                    ? item.connectString
+                                    : (item.type === 'sqlite' ? (item.file || ':memory:') : `${item.host}:${item.port}/${item.database}`),
+                                username: item.username || '',
+                                level,
+                            };
+                        })
+                        .filter((item) => item.level !== 'none');
+                })()
+                : [],
         };
     }
 
@@ -1183,9 +1210,9 @@ export class ApiRunnerService {
         }
     }
 
-    async dbTest(target) {
+    async dbTest(target, options = {}) {
         if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
-        return this.dbManager.testConnection(target);
+        return this.dbManager.testConnection(target, options);
     }
 
     dbSave(patch) {
@@ -1203,19 +1230,30 @@ export class ApiRunnerService {
         return this.dbManager.query(id, sql, params, options);
     }
 
-    async dbDatabases(id) {
+    async dbDatabases(id, options = {}) {
         if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
-        return this.dbManager.listDatabases(id);
+        return this.dbManager.listDatabases(id, options);
     }
 
-    async dbTables(id, database = '') {
+    async dbTables(id, database = '', options = {}) {
         if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
-        return this.dbManager.listTables(id, database);
+        return this.dbManager.listTables(id, database, options);
     }
 
-    async dbDescribeTable(id, table) {
+    async dbDescribeTable(id, table, options = {}) {
         if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
-        return this.dbManager.describeTable(id, table);
+        return this.dbManager.describeTable(id, table, options);
+    }
+
+    // ---- 数据库项目授权（默认拒绝，必须显式授权） ----
+    dbAccess(projectKey) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.accessView(projectKey);
+    }
+
+    dbSetAccess(projectKey, connectionId, level) {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.setAccess(projectKey, connectionId, level);
     }
 
     dispose() {
