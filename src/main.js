@@ -715,6 +715,9 @@ async function handleHttp(req, res, service, projectOf) {
             timeoutMs: body.timeout_ms ? Number(body.timeout_ms) : undefined,
         }));
     }
+    if (route === 'db/diagnose' && req.method === 'GET') {
+        return send(200, await service.dbDiagnose());
+    }
     if (route === 'db/save' && req.method === 'POST') {
         const body = await readBody();
         return send(200, service.dbSave(asObject(body.connection || body)));

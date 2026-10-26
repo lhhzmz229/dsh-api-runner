@@ -775,11 +775,35 @@ export class DbManager {
             dmdb = await import('dmdb');
         } catch (error) {
             /**
-             * 只在这里报「缺依赖」——这里才是真正的导入失败。
-             * 之前把整个建池过程包在同一个 try 里，导致 createPool 调用出错
-             * （比如模块结构不对）也被说成「缺少 dmdb 依赖」，误导排查方向。
+             * import 失败有两种，必须分开说，否则用户按「缺依赖」去装包可能白装：
+             *
+             *   1. ERR_MODULE_NOT_FOUND —— 真的没装。给出安装命令。
+             *   2. 其它错误 —— 包装了但加载时抛异常（依赖损坏、Node 版本不兼容、
+             *      或它内部某个初始化挂了）。这时「去装 dmdb」是没用的，
+             *      要告诉用户真实原因和排查方法。
              */
-            throw new Error(`缺少 dmdb 依赖：请在该插件目录执行 npm install dmdb（${error?.message || error}）`);
+            const code = error?.code || '';
+            const detail = String(error?.message || error);
+            if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package/i.test(detail)) {
+                throw new Error(
+                    `缺少 dmdb 依赖。请在该插件目录执行 npm install dmdb，`
+                    + `或改用 npm 安装插件（会自动带依赖）：${detail}`,
+                );
+            }
+            // 包装了但加载失败：把堆栈前几行带出来，便于定位是哪一行挂的
+            const stackTop = String(error?.stack || '')
+                .split('\n')
+                .slice(1, 4)
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .join(' ← ');
+            throw new Error(
+                `dmdb 已安装但加载失败（不是缺包，装它没用）。`
+                + `原始错误：${detail}`
+                + (stackTop ? `；位置：${stackTop}` : '')
+                + `。常见原因：dmdb 版本与当前 Node 不兼容，或它的依赖装坏了——`
+                + `在该插件目录删掉 node_modules/dmdb 后重新 npm install dmdb。`,
+            );
         }
 
         /**
@@ -1053,6 +1077,78 @@ export class DbManager {
 
     // ---------------------------------------------------------------- 元数据
     /** 列出库（MySQL/PG 有库的概念；SQLite 只有文件） */
+    /**
+     * 驱动自检：报告每个可选驱动能否加载。
+     *
+     * 为什么需要：用户装完插件后如果某个驱动没装上或装坏了，
+     * 报错信息很难定位（尤其「包装了但加载失败」）。这个接口直接给出
+     * 「装没装 / 能不能用 / 版本多少 / 报什么错」，面板上一键就能看。
+     */
+    async diagnose() {
+        const checks = [
+            { name: 'sqlite', label: 'SQLite', builtin: true },
+            { name: 'mysql2', label: 'MySQL' },
+            { name: 'pg', label: 'PostgreSQL' },
+            { name: 'oracledb', label: 'Oracle' },
+            { name: 'dmdb', label: '达梦' },
+        ];
+        const out = [];
+        for (const item of checks) {
+            if (item.builtin) {
+                let ok = false;
+                let detail = '';
+                try {
+                    const { DatabaseSync } = await import('node:sqlite');
+                    ok = typeof DatabaseSync === 'function';
+                    detail = ok ? `Node ${process.versions.node} 内置` : 'node:sqlite 不可用';
+                } catch (error) {
+                    detail = `Node ${process.versions.node} 不支持 node:sqlite（需要 >=22.5）：${error.message}`;
+                }
+                out.push({ name: item.name, label: item.label, installed: ok, ok, version: '', detail });
+                continue;
+            }
+            try {
+                const mod = await import(item.name);
+                // 找到真正带 API 的那个导出
+                const real = [mod?.default, mod?.dmdb, mod?.default?.dmdb, mod]
+                    .find((m) => m && (typeof m.createPool === 'function' || typeof m.Pool === 'function' || typeof m.createConnection === 'function'));
+                let version = '';
+                try {
+                    version = String(mod?.default?.version || mod?.version || '');
+                } catch { /* 有的包不暴露 version */ }
+                out.push({
+                    name: item.name,
+                    label: item.label,
+                    installed: true,
+                    ok: Boolean(real),
+                    version,
+                    detail: real ? '可用' : `已安装但结构异常（导出项：${Object.keys(mod || {}).slice(0, 8).join(', ') || '空'}）`,
+                });
+            } catch (error) {
+                const code = error?.code || '';
+                const missing = code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package/i.test(String(error?.message));
+                out.push({
+                    name: item.name,
+                    label: item.label,
+                    installed: false,
+                    ok: false,
+                    version: '',
+                    detail: missing
+                        ? '未安装（在该插件目录执行 npm install 即可）'
+                        : `已安装但加载失败：${error?.message || error}`,
+                });
+            }
+        }
+        return {
+            ok: true,
+            node: process.versions.node,
+            drivers: out,
+            /** 有任何一个驱动「装了但用不了」，就值得提醒 */
+            broken: out.filter((d) => d.installed && !d.ok).map((d) => d.name),
+            missing: out.filter((d) => !d.installed && d.name !== 'sqlite').map((d) => d.name),
+        };
+    }
+
     async listDatabases(id, options = {}) {
         const auth = this.resolveAccess(id, options.projectKey, options.connectionOverride);
         if (!auth.ok) return auth;

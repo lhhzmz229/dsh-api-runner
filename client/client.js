@@ -1348,6 +1348,8 @@ window.__ModuleLoader__.load({
             const [dbAccess, setDbAccess] = React.useState(null);
             /** 表单试连进行中（独立状态，不锁其它按钮） */
             const [dbTesting, setDbTesting] = React.useState(false);
+            /** 驱动自检结果（null = 没查过） */
+            const [dbDiagnose, setDbDiagnose] = React.useState(null);
 
             const headers = React.useMemo(() => ({ 'Content-Type': 'application/json', 'x-dsh-session-id': sessionId }), [sessionId]);
             const get = React.useCallback(async (path) => {
@@ -1889,6 +1891,25 @@ window.__ModuleLoader__.load({
                 }
             };
 
+            /**
+             * 驱动自检：把「哪个驱动装没装、能不能用」直接摊开。
+             * 用户遇到「缺少 xxx 依赖」或「装了但加载失败」时，点这个就能定位，
+             * 不用去翻 node_modules。
+             */
+            const runDiagnose = async () => {
+                setDbDbBusy('diagnose');
+                setDbError('');
+                try {
+                    const data = await request('db/diagnose', { headers });
+                    if (data.ok === false) throw new Error(data.message || '自检失败');
+                    setDbDiagnose(data);
+                } catch (e) {
+                    setDbError(e.message);
+                } finally {
+                    setDbDbBusy('');
+                }
+            };
+
             /** 列表行的测试：同样用独立状态，不锁其它按钮 */
             const dbTest = async (item) => {
                 setDbTesting(true);
@@ -2262,7 +2283,34 @@ window.__ModuleLoader__.load({
                             }); },
                         }, '新增连接'),
                         h('span', { className: 'ar-spacer' }),
+                        h('button', {
+                            className: 'ar-btn ghost',
+                            disabled: dbDbBusy !== '',
+                            title: '检查各数据库驱动是否可用（装不上时用这个排查）',
+                            onClick: runDiagnose,
+                        }, '驱动自检'),
                         h('button', { className: 'ar-btn ghost icon', disabled: dbDbBusy !== '', title: '重新读取连接列表', onClick: refreshDb }, '↻')),
+
+                    // 自检结果：逐个驱动列出「可用 / 未安装 / 装了但加载失败」
+                    dbDiagnose
+                        ? h('div', { className: 'ar-card' },
+                            h('div', { className: 'ar-row' },
+                                h('div', { className: 'ar-name' }, '驱动自检'),
+                                h('span', { className: 'ar-spacer' }),
+                                h('button', { className: 'ar-btn ghost icon', title: '关闭', onClick: () => setDbDiagnose(null) }, '×')),
+                            h('div', { className: 'ar-hint' }, `Node ${dbDiagnose.node}`),
+                            h('div', { className: 'ar-group' }, (dbDiagnose.drivers || []).map((d) => h('div', {
+                                key: d.name,
+                                className: 'ar-item',
+                            },
+                                h('div', { className: 'ar-row', style: { flexWrap: 'wrap', gap: '5px' } },
+                                    h('span', { className: d.ok ? 'ar-badge ok' : (d.installed ? 'ar-badge err' : 'ar-badge') },
+                                        d.ok ? '可用' : (d.installed ? '异常' : '未安装')),
+                                    h('span', { className: 'ar-name' }, d.label),
+                                    h('span', { className: 'ar-hint ar-mono' }, d.name),
+                                    d.version ? h('span', { className: 'ar-hint ar-mono' }, `v${d.version}`) : null),
+                                h('div', { className: 'ar-hint', style: { overflowWrap: 'anywhere' } }, d.detail)))))
+                        : null,
 
                     dbConnections.length === 0
                         ? h(Empty, {

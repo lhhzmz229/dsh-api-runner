@@ -495,6 +495,40 @@ await ok('describe 只列已授权的连接，未授权的不给模型看', asyn
     service.dispose();
 });
 
+await ok('驱动自检能报告每个驱动的状态', async () => {
+    const r = await manager.diagnose();
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(Array.isArray(r.drivers), '应返回 drivers 数组');
+    assert.equal(typeof r.node, 'string', '应报告 Node 版本');
+
+    const names = r.drivers.map((d) => d.name);
+    for (const want of ['sqlite', 'mysql2', 'pg', 'dmdb']) {
+        assert.ok(names.includes(want), `自检应包含 ${want}`);
+    }
+    // 每项都要有明确的状态与说明
+    for (const d of r.drivers) {
+        assert.equal(typeof d.ok, 'boolean', `${d.name} 应有 ok`);
+        assert.equal(typeof d.installed, 'boolean', `${d.name} 应有 installed`);
+        assert.ok(String(d.detail || '').length > 0, `${d.name} 应有说明`);
+    }
+    // SQLite 是内置的，必须可用
+    const sqlite = r.drivers.find((d) => d.name === 'sqlite');
+    assert.equal(sqlite.ok, true, 'node:sqlite 应可用（Node >=22.5）');
+});
+
+await ok('驱动自检不会泄漏密码或连接串', async () => {
+    const saved = manager.saveConnection({
+        name: '自检脱敏',
+        type: 'dm',
+        connectString: 'dm://u:topsecret@127.0.0.1:5236',
+    });
+    assert.equal(saved.ok, true);
+    const r = await manager.diagnose();
+    const text = JSON.stringify(r);
+    assert.equal(text.includes('topsecret'), false, '自检结果不应含密码');
+    manager.deleteConnection(saved.connection.id);
+});
+
 await ok('service 暴露数据库方法，且 dispose 关闭连接池', async () => {
     const service = new ApiRunnerService({ homeDir });
     const saved = service.dbSave({ name: '服务层库', type: 'sqlite', database: dbFile });

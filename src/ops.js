@@ -1215,6 +1215,12 @@ export class ApiRunnerService {
         return this.dbManager.testConnection(target, options);
     }
 
+    /** 驱动自检：面板上一键查看各驱动是否可用 */
+    async dbDiagnose() {
+        if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
+        return this.dbManager.diagnose();
+    }
+
     dbSave(patch) {
         if (!this.dbManager) return { ok: false, code: 'NO_DB', message: '数据库模块不可用' };
         return this.dbManager.saveConnection(patch);
