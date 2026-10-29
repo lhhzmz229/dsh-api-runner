@@ -83,21 +83,17 @@ function makeSlots(options = {}) {
 
 // apply：只提供 slots 的 ctx，断言注册落在宿主自带的席位上
 const first = makeSlots();
-const tabTypes = [];
 const effects = [];
 const ctx = {
-    get: (name) => {
-        if (name === 'slots') return first.slots;
-        if (name === 'sidebarRightTabs') {
-            return {
-                register: (definition) => {
-                    tabTypes.push(definition);
-                    return () => {};
-                },
-            };
-        }
-        return undefined;
-    },
+    /**
+     * 只暴露 slots。
+     *
+     * 注意：**不要**再 mock `sidebarRightTabs` —— DSH 没有这个服务。
+     * 之前代码依赖它，拿到 undefined 就 return，导致右侧栏页签的入口卡片
+     * 从没注册过，用户右侧栏里看不到「接口调试」（左侧却有）。
+     * 现在右侧栏靠三个 keyed 席位注册，这里也不再需要那个假服务。
+     */
+    get: (name) => (name === 'slots' ? first.slots : undefined),
     effect: (callback, label) => {
         effects.push(label);
         return callback();
@@ -107,8 +103,8 @@ recorded.exports.apply(ctx);
 
 assert.deepEqual(
     first.injected,
-    ['sidebar.panellist', 'main', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'settings.section'],
-    '每个席位都要通过 slots.inject 等待声明就绪',
+    ['sidebar.panellist', 'main', 'sidebar.right.tab.guide.entry', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'settings.section'],
+    '每个席位都要通过 slots.inject 等待声明就绪（右侧栏要三个：入口卡片/正文/标题）',
 );
 
 const byName = (name) => first.registrations.filter((item) => item.descriptor.name === name);
@@ -130,10 +126,25 @@ assert.equal(sections.length, 1, '应注册一个设置页');
 assert.equal(sections[0].descriptor.id, 'dsh-api-runner');
 assert.equal(sections[0].descriptor.label(), '接口调试');
 
-assert.equal(tabTypes.length, 1, '应向 sidebarRightTabs 注册一个页签类型');
-assert.equal(tabTypes[0].id, 'dsh-api-runner');
-assert.equal(tabTypes[0].kind, 'dsh-api-runner');
-assert.equal(tabTypes[0].title(), '接口调试');
+/**
+ * 右侧栏三个席位都要注册（都用同一个 key）。
+ *
+ * 这是用户报过的 bug：右侧栏只注册了正文和标题、没注册入口卡片，
+ * 结果右侧栏里根本看不到「接口调试」，左侧却有。
+ */
+for (const slotName of ['sidebar.right.tab.guide.entry', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title']) {
+    const entries = byName(slotName);
+    assert.equal(entries.length, 1, `应注册 ${slotName}`);
+    assert.equal(entries[0].descriptor.key, 'dsh-api-runner', `${slotName} 的 key 应是 dsh-api-runner`);
+    assert.ok(entries[0].render, `${slotName} 应有可渲染组件`);
+}
+
+// 入口卡片能渲染（宿主会传 title/description，也可能不传）
+const guideCard = byName('sidebar.right.tab.guide.entry')[0];
+for (const props of [{ title: '接口调试', description: 'desc' }, {}, undefined]) {
+    const el = guideCard.render(props);
+    assert.ok(el, `入口卡片应能渲染（props=${JSON.stringify(props)}）`);
+}
 
 // 设置页能渲染
 const page = sections[0].render();
@@ -297,6 +308,7 @@ recorded.exports.apply({
     get: (name) => (name === 'slots' ? second.slots : undefined),
     effect: (callback) => callback(),
 });
-assert.equal(second.registrations.length, 5, '没有 inject 时也要把五个席位都注册上');
+// 席位：panellist / main / guide.entry / right.pane.tab / right.pane.tab.title / settings.section
+assert.equal(second.registrations.length, 6, '没有 inject 时也要把六个席位都注册上');
 
 console.log('PASSED: client bundle shape');

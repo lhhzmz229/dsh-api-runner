@@ -371,6 +371,29 @@ window.__ModuleLoader__.load({
         .ar-empty-title { font-size: 13.5px; font-weight: 600; }
         .ar-empty-hint { font-size: 12px; opacity: .52; line-height: 1.65; max-width: 250px; }
 
+        /* ─────────────────── 右侧栏的入口卡片 ───────────────────
+           右侧栏空态/新建页签时列出的卡片。宿主自带的三张（工作区文件、
+           新建终端、浏览器）用同样的视觉，这里对齐它们的排版。 */
+        .ar-guide-card {
+          display: flex; align-items: center; gap: 12px;
+          padding: 14px 16px; cursor: pointer;
+          border: 1px solid var(--ar-sep-soft); border-radius: var(--ar-r-lg);
+          background: var(--ar-surface-1);
+          transition: background-color var(--ar-dur) var(--ar-ease),
+                      border-color var(--ar-dur) var(--ar-ease);
+        }
+        .ar-guide-card:hover {
+          background: var(--ar-surface-2); border-color: var(--ar-sep);
+        }
+        .ar-guide-icon {
+          flex: none; width: 32px; height: 32px;
+          display: flex; align-items: center; justify-content: center;
+          border-radius: var(--ar-r-sm); background: var(--ar-accent-soft); color: var(--ar-accent);
+        }
+        .ar-guide-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .ar-guide-title { font-size: 13.5px; font-weight: 600; }
+        .ar-guide-desc { font-size: 12px; opacity: .55; line-height: 1.5; }
+
         /* ─────────────────────────── 表格 ─────────────────────────── */
         .ar-table-wrap {
           width: 100%; overflow-x: auto; border-radius: var(--ar-r-md);
@@ -721,7 +744,7 @@ window.__ModuleLoader__.load({
         }
 
         function JavaRow(props) {
-            const { item, onUseBaseUrl, onTakeOver, onStop, onRestart, onDetail, onIgnore, onUnignore, onSave, busy, muted } = props;
+            const { item, onUseBaseUrl, onTakeOver, onStop, onForget, onRestart, onDetail, onIgnore, onUnignore, onSave, busy, muted } = props;
             const profiles = Array.isArray(item.profiles) ? item.profiles : [];
             const managed = item.owner === 'plugin';
             const running = managed ? Boolean(item.alive) : true;
@@ -758,6 +781,21 @@ window.__ModuleLoader__.load({
                                 : h('button', { className: 'ar-btn', disabled: busy !== '', onClick: () => onRestart(item) }, '启动'))
                             : h('button', { className: 'ar-btn primary', disabled: busy !== '', title: '结束 IDEA 起的进程，改用插件启动（会先编译，再拉起）；之后就能在插件里停止/重启/看日志', onClick: () => onTakeOver(item) }, '接管启动')),
                     !ignored && managed && running ? h('button', { className: 'ar-btn ghost danger', disabled: busy !== '', onClick: () => onStop(item) }, '停止') : null,
+                    /**
+                     * 移除接管记录：只在「插件启动过、但现在已停止」时出现。
+                     *
+                     * 场景：用户在 IDEA 里把进程关掉了，面板上仍留着一条「已停止」的
+                     * 幽灵条目，点它什么也做不了。这个按钮只删记账、不碰进程，
+                     * 把这类残留清掉。
+                     */
+                    !ignored && managed && !running && onForget
+                        ? h('button', {
+                            className: 'ar-btn ghost',
+                            disabled: busy !== '',
+                            title: '只移除这条接管记录（进程已经停了），不影响任何正在运行的服务',
+                            onClick: () => onForget(item),
+                        }, '移除记录')
+                        : null,
                     // 保存配方：之后即使 IDEA 里没跑，也能直接从这里启动
                     !ignored && onSave && running ? h('button', { className: 'ar-btn ghost', disabled: busy !== '', title: '把这套启动参数（classpath/主类/JVM 参数）存下来，以后不用先在 IDEA 里跑也能启动', onClick: () => onSave(item) }, '保存') : null,
                     h('span', { className: 'ar-spacer' }),
@@ -1635,6 +1673,26 @@ window.__ModuleLoader__.load({
                 }
             };
 
+            /**
+             * 移除接管记录（只删记账，不杀进程）。
+             * 用于清掉「IDE 里已经关了、面板还留着一条已停止」的幽灵条目。
+             */
+            const forgetRun = async (item) => {
+                if (!window.confirm(`移除「${item.name}」的接管记录？\n\n只删面板里的这条记录，不影响任何正在运行的进程。`)) return;
+                setBusy('forget');
+                setError('');
+                try {
+                    const payload = await post('java/forget', { id: item.runId || item.pid });
+                    if (payload.ok) setNotice(payload.message || '已移除记录');
+                    else setError(payload.message || '移除失败');
+                    await refreshJava();
+                } catch (e) {
+                    setError(e.message);
+                } finally {
+                    setBusy('');
+                }
+            };
+
             const restartRun = async (item) => {
                 setBusy('restart');
                 setError('');
@@ -2061,6 +2119,7 @@ window.__ModuleLoader__.load({
                     busy,
                     onClose: () => { setDetail(null); refreshJava(); },
                     onStop: async (item) => { await stopRun(item); await refreshJava(); },
+                    onForget: forgetRun,
                     onRestart: async (item) => { await restartRun(item); },
                     onTakeOver: takeOver,
                     onIgnore: ignoreJava,
@@ -2097,6 +2156,7 @@ window.__ModuleLoader__.load({
                             onUseBaseUrl: useBaseUrl,
                             onTakeOver: takeOver,
                             onStop: stopRun,
+                            onForget: forgetRun,
                             onRestart: restartRun,
                             onDetail: (target) => setDetail(target),
                             onIgnore: ignoreJava,
@@ -2119,6 +2179,7 @@ window.__ModuleLoader__.load({
                             onUseBaseUrl: useBaseUrl,
                             onTakeOver: takeOver,
                             onStop: stopRun,
+                            onForget: forgetRun,
                             onRestart: restartRun,
                             onDetail: (target) => setDetail(target),
                             onIgnore: ignoreJava,
@@ -2167,6 +2228,7 @@ window.__ModuleLoader__.load({
                             onUseBaseUrl: useBaseUrl,
                             onTakeOver: takeOver,
                             onStop: stopRun,
+                            onForget: forgetRun,
                             onRestart: restartRun,
                             onDetail: (target) => setDetail(target),
                             onIgnore: ignoreJava,
@@ -2680,23 +2742,30 @@ window.__ModuleLoader__.load({
                 key: TAB_ID,
             }, GlobalPanel)), 'dsh-api-runner: main panel');
 
-            // 右侧栏页签：定义注册进 sidebarRightTabs，正文和标题按同一个 id 落到两个 keyed 席位
-            ctx.effect(() => {
-                const tabs = typeof ctx.get === 'function' ? ctx.get('sidebarRightTabs') : undefined;
-                if (!tabs || typeof tabs.register !== 'function') return () => {};
-                return tabs.register({
-                    id: TAB_ID,
-                    kind: TAB_ID,
-                    title: () => '接口调试',
-                    guide: [{
-                        id: TAB_ID,
-                        order: 42,
-                        title: () => '接口调试',
-                        description: () => '配置接口、登录保存 token、调用测试、查看本机 Java 服务',
-                        icon: PanelIcon,
-                    }],
-                }) ?? (() => {});
-            }, 'dsh-api-runner: right tab type');
+            /**
+             * 右侧栏页签：三件事都要注册，少一件就出不来。
+             *
+             * 之前这里调 `ctx.get('sidebarRightTabs')` 注册「页签类型」——
+             * 但 DSH 根本没有这个服务，拿到 undefined 就直接 return 了，
+             * 结果正文和标题注册了、**卡片没注册**，右侧栏里永远看不到入口。
+             * （用户反馈：左侧有「接口调试」，右侧栏只有三张默认卡片。）
+             *
+             * 正确机制是三个 keyed 席位，都用同一个 key：
+             *   1. sidebar.right.tab.guide.entry —— 右侧栏空态/新建页签时的那张卡片
+             *   2. sidebar.right.pane.tab        —— 页签正文
+             *   3. sidebar.right.pane.tab.title  —— 页签标题（chip 上显示的字）
+             */
+            ctx.effect(() => wait('sidebar.right.tab.guide.entry', () => slots.register({
+                name: 'sidebar.right.tab.guide.entry',
+                key: TAB_ID,
+                order: 42,
+            }, (props) => h('div', { className: 'ar-guide-card' },
+                h('div', { className: 'ar-guide-icon' }, h(PanelIcon, { size: 20, active: false })),
+                h('div', { className: 'ar-guide-text' },
+                    h('div', { className: 'ar-guide-title' }, (props && props.title) || '接口调试'),
+                    h('div', { className: 'ar-guide-desc' },
+                        (props && props.description) || '配置接口、登录保存 token、调用测试、查看本机 Java 服务'))))),
+                'dsh-api-runner: right tab guide card');
 
             ctx.effect(() => wait('sidebar.right.pane.tab', () => slots.register({
                 name: 'sidebar.right.pane.tab',

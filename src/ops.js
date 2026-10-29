@@ -591,6 +591,24 @@ export class ApiRunnerService {
         const project = this.projectStore ? this.projectStore.project(cwd) : { bindings: [], ignored: [] };
         const boundPids = new Set(project.bindings.map((item) => Number(item.pid)));
         const ignoredKeys = new Set((project.ignored || []).map((item) => javaKeyOf(item)));
+
+        /**
+         * 用 jps 的真实结果校正托管记录的存活状态。
+         *
+         * 只看 pid 是否存活会被「pid 复用」骗过：进程死了、pid 被系统分给别的
+         * 进程，面板就以为服务还在跑（显示「插件启动」），点重启却超时。
+         * 这里拿 jps 的 pid→主类名对一遍，对不上就判定已退出。
+         */
+        if (this.javaRunner && typeof this.javaRunner.verifyAlive === 'function' && runs.length > 0) {
+            const pidToMain = new Map();
+            for (const item of result.processes || []) {
+                if (item && Number.isFinite(Number(item.pid))) pidToMain.set(Number(item.pid), String(item.mainClass || ''));
+            }
+            const verdict = this.javaRunner.verifyAlive(runs, pidToMain);
+            for (const run of runs) {
+                if (verdict.has(run.id)) run.alive = verdict.get(run.id);
+            }
+        }
         const runByPid = new Map(runs.filter((run) => run.alive).map((run) => [Number(run.pid), run]));
         const runByName = new Map(runs.map((run) => [String(run.id), run]));
 
@@ -1052,6 +1070,15 @@ export class ApiRunnerService {
     async restartJava(cwd, idOrPid, options = {}) {
         if (!this.javaRunner) return { ok: false, code: 'NO_RUNNER', message: 'Java 托管不可用' };
         return this.javaRunner.restart(cwd, idOrPid, options);
+    }
+
+    /**
+     * 忘掉一条接管记录（不杀进程）。
+     * 用于清掉「IDE 里已经关了、但面板上还留着」的幽灵条目。
+     */
+    async forgetJava(cwd, idOrPid) {
+        if (!this.javaRunner) return { ok: false, code: 'NO_RUNNER', message: 'Java 托管不可用' };
+        return this.javaRunner.forget(cwd, idOrPid);
     }
 
     javaLogs(cwd, id, options = {}) {

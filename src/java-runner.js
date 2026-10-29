@@ -130,7 +130,18 @@ export class JavaRunner {
         return `${this.keyOf(cwd)}|${id}`;
     }
 
-    /** 某个项目的所有托管记录（含 alive 状态，已退出的也保留，便于看历史日志/再次启动） */
+    /**
+     * 某个项目的所有托管记录（含 alive 状态，已退出的也保留，便于看历史日志/再次启动）。
+     *
+     * `alive` 不能只看 pid 是否存在：进程退出后 pid 可能被系统复用，
+     * 于是「已死的服务」被误判成还在跑——面板上显示「插件启动」，
+     * 点重启却超时（因为真正那个进程早就没了）。用户反馈过这个问题。
+     *
+     * 所以 alive 判定改成两步：
+     *   1. pid 还在（isAlive）
+     *   2. 能查到该 pid 的命令行，且主类名和记录一致
+     * 查不到命令行时（权限不足等）保守按「存活」处理，避免误删正在跑的服务。
+     */
     runs(cwd) {
         const doc = this._load();
         const key = this.keyOf(cwd);
@@ -141,6 +152,45 @@ export class JavaRunner {
         }
         out.sort((a, b) => String(a.id).localeCompare(String(b.id)));
         return out;
+    }
+
+    /**
+     * 校验一批 run 的 pid 是否真的还是原来那个进程。
+     *
+     * 用 jps 的 pid→主类名映射判断，不额外起进程查命令行（更快也更稳）：
+     * 如果记录的 pid 在 jps 里对应的是别的主类，说明 pid 已被复用，判定为已退出。
+     *
+     * @param {Array} runs 托管记录
+     * @param {Map<number,string>} pidToMainClass 当前 jps 看到的 pid→主类
+     * @returns {Map<string, boolean>} run.id → 是否真的还活着
+     */
+    verifyAlive(runs, pidToMainClass) {
+        const result = new Map();
+        if (!(pidToMainClass instanceof Map)) return result;
+        /**
+         * jps 完全没返回任何进程时**不要**改判。
+         * 那种情况多半是 jps 本身出问题（没装 JDK、权限不足、输出解析失败），
+         * 拿它当「所有服务都死了」的证据会把正在跑的服务全标成已停止。
+         * 只有 jps 确实给出了进程清单，才用它判断某个 pid 是否存在。
+         */
+        const jpsHasData = pidToMainClass.size > 0;
+        for (const run of runs) {
+            if (!run.alive) continue;
+            const pid = Number(run.pid);
+            if (!Number.isFinite(pid) || pid <= 0) continue;
+            const actualMain = pidToMainClass.get(pid);
+            if (actualMain === undefined) {
+                // jps 里有别的进程、唯独没有这个 → 它确实退出了
+                if (jpsHasData) result.set(run.id, false);
+                continue;
+            }
+            // pid 在，但主类对不上 → pid 被别的进程复用了
+            const expected = String(run.mainClass || '').trim();
+            if (expected !== '' && actualMain !== expected) {
+                result.set(run.id, false);
+            }
+        }
+        return result;
     }
 
     runById(cwd, id) {
@@ -407,6 +457,47 @@ export class JavaRunner {
 
     // ---------------------------------------------------------------- 停止 / 重启
     /** 只允许停插件自己起的进程 */
+    /**
+     * 忘掉一条接管记录（不杀进程，只删记账）。
+     *
+     * 为什么需要：`stop()` 会保留记录（alive=false），这样面板上还能看历史日志、
+     * 也能再启动。但如果用户已经在 IDEA 里把进程关掉了，面板上仍留着一条
+     * 「已停止」的幽灵条目，点它什么也做不了——用户反馈过这个困扰。
+     *
+     * 安全约束：**进程还活着时拒绝**，否则会删掉记账、进程却还在跑，
+     * 变成真正的失控状态。要先 stop 再 forget。
+     */
+    async forget(cwd, idOrPid) {
+        const key = String(idOrPid || '');
+        const doc = this._load();
+        const slotKey = doc.runs[this._slot(cwd, key)] ? this._slot(cwd, key) : undefined;
+        const found = slotKey
+            ? { slot: slotKey, run: doc.runs[slotKey] }
+            : Object.entries(doc.runs)
+                .filter(([slot]) => slot.startsWith(`${this.keyOf(cwd)}|`))
+                .map(([slot, run]) => ({ slot, run }))
+                .find((item) => String(item.run.pid) === key || item.run.id === key);
+        if (!found) return { ok: false, code: 'RUN_NOT_FOUND', message: `没有由插件启动的 ${key}` };
+
+        // 进程还活着就拒绝，避免「记录没了、进程还在跑」的失控状态
+        if (isAlive(Number(found.run.pid))) {
+            return {
+                ok: false,
+                code: 'STILL_RUNNING',
+                message: `${found.run.id}（pid ${found.run.pid}）还在运行，请先停止再移除记录`,
+            };
+        }
+
+        delete doc.runs[found.slot];
+        this._save(doc);
+        return {
+            ok: true,
+            id: found.run.id,
+            pid: found.run.pid,
+            message: `已移除 ${found.run.id} 的接管记录`,
+        };
+    }
+
     async stop(cwd, idOrPid) {
         const key = String(idOrPid || '');
         const doc = this._load();
@@ -440,13 +531,18 @@ export class JavaRunner {
         let compile = { ok: true, skipped: true };
         if (options.compile !== false && entry.module) {
             const mvn = await resolveMaven(this.configuredMaven(String(options.mvn || '')));
+            /**
+             * 编译超时默认 3 分钟（原 5 分钟）。
+             * 单模块增量编译通常 10–40 秒；给 5 分钟会让用户以为卡死。
+             * 需要更久时显式传 compileTimeoutMs。
+             */
             compile = await compileModule({
                 mvn,
                 rootDir: entry.module.rootDir,
                 artifactId: entry.module.artifactId,
                 selector: entry.module.selector,
                 javaHome: entry.javaHome,
-                timeoutMs: Number(options.compileTimeoutMs) || 300_000,
+                timeoutMs: Number(options.compileTimeoutMs) || 180_000,
             });
             if (!compile.ok) return { ok: false, code: compile.code || 'COMPILE_FAILED', message: `编译失败，未重启：${compile.message}`, compile };
         }
@@ -454,7 +550,23 @@ export class JavaRunner {
         if (isAlive(Number(entry.pid))) {
             const killed = await killProcessTree(Number(entry.pid));
             if (!killed.ok) return { ok: false, code: 'KILL_FAILED', message: killed.message, compile };
-            if (entry.port) await waitPortFree('127.0.0.1', Number(entry.port), { timeoutMs: 20_000 });
+            /**
+             * 等端口释放，但**别等满 20 秒**：
+             * 端口通常 1–3 秒就释放；真被别的进程占着时，等再久也没用，
+             * 应该尽快返回并告诉用户「端口还被占用」，而不是静默超时。
+             */
+            if (entry.port) {
+                const freed = await waitPortFree('127.0.0.1', Number(entry.port), { timeoutMs: 8_000 });
+                if (!freed || freed.ok === false) {
+                    return {
+                        ok: false,
+                        code: 'PORT_BUSY',
+                        id: entry.id,
+                        message: `端口 ${entry.port} 在 8 秒内没有释放，可能被别的进程占用了（原服务已停止）。`,
+                        compile,
+                    };
+                }
+            }
         }
 
         // 每次重启开一个新日志段，历史启动记录不被覆盖

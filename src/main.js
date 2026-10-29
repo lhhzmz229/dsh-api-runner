@@ -86,8 +86,8 @@ const PARAMETERS = {
         log_id: { type: 'string', description: '日志 id 或 name（log、wait_log、reset_log 用；省略时取第一个日志）' },
         java_action: {
             type: 'string',
-            enum: ['list', 'start', 'stop', 'restart', 'log', 'status', 'detail', 'ignore', 'unignore', 'save', 'unsave', 'start_saved', 'start_all', 'settings'],
-            description: 'Java 服务动作（action=java 用）：list 列出；detail 服务详情+日志；start 接管启动（先编译再杀旧进程）；stop/restart 只对插件启动的生效；log 读日志；ignore/unignore 在面板列表中隐藏/恢复；save 把当前进程的启动配方向保存下来（之后不用 IDEA 也能起）；unsave 删除保存；start_saved 按保存的配置启动一个；start_all 一键启动所有已保存的服务（已运行的跳过，单个失败不影响其余，返回每个的成败）；settings 读写插件设置（数据目录/默认工作区）',
+            enum: ['list', 'start', 'stop', 'restart', 'forget', 'log', 'status', 'detail', 'ignore', 'unignore', 'save', 'unsave', 'start_saved', 'start_all', 'settings'],
+            description: 'Java 服务动作（action=java 用）：list 列出；detail 服务详情+日志；start 接管启动（先编译再杀旧进程）；stop/restart 只对插件启动的生效；forget 只删接管记录不杀进程（清掉「IDE 里已关、面板还留着」的幽灵条目）；log 读日志；ignore/unignore 在面板列表中隐藏/恢复；save 把当前进程的启动配方向保存下来（之后不用 IDEA 也能起）；unsave 删除保存；start_saved 按保存的配置启动一个；start_all 一键启动所有已保存的服务（已运行的跳过，单个失败不影响其余，返回每个的成败）；settings 读写插件设置（数据目录/默认工作区）',
         },
         java_ids: {
             type: 'array',
@@ -190,6 +190,11 @@ async function runTool(service, args, projectPath) {
                 const target = args.java_id || args.pid;
                 if (!target) return { ok: false, code: 'MISSING_ARGUMENT', message: 'java_action=stop 需要 java_id 或 pid' };
                 return service.stopJava(projectPath, target);
+            }
+            if (javaAction === 'forget') {
+                const target = args.java_id || args.pid;
+                if (!target) return { ok: false, code: 'MISSING_ARGUMENT', message: 'java_action=forget 需要 java_id 或 pid' };
+                return service.forgetJava(projectPath, target);
             }
             if (javaAction === 'restart') {
                 const target = args.java_id || args.pid;
@@ -639,6 +644,10 @@ async function handleHttp(req, res, service, projectOf) {
     if (route === 'java/stop' && req.method === 'POST') {
         const body = await readBody();
         return send(200, await service.stopJava(pickCwd(cwd, url, body), String(body.id || body.run_id || body.pid || '')));
+    }
+    if (route === 'java/forget' && req.method === 'POST') {
+        const body = await readBody();
+        return send(200, await service.forgetJava(pickCwd(cwd, url, body), String(body.id || body.run_id || body.pid || '')));
     }
     if (route === 'java/restart' && req.method === 'POST') {
         const body = await readBody();

@@ -448,6 +448,65 @@ await ok('工具描述里提到 login 与 java', () => {
     assert.ok(tool.parameters.properties.java_ids, '应有 java_ids 参数');
 });
 
+await ok('java_action 有 forget（清理幽灵接管记录）', () => {
+    const tool = registered.tools[0];
+    const enumList = tool.parameters.properties.java_action.enum;
+    assert.ok(enumList.includes('forget'), 'java_action 应支持 forget');
+    // 描述里要说清楚它只删记录、不杀进程，否则用户不敢点
+    const desc = String(tool.parameters.properties.java_action.description || '');
+    assert.ok(/forget/.test(desc), '描述应提到 forget');
+    assert.ok(/不杀进程|只删|记录/.test(desc), '描述应说明 forget 不杀进程');
+});
+
+await ok('verifyAlive 能识别 pid 复用（幽灵接管的根因）', async () => {
+    const { JavaRunner } = await load('src/java-runner.js');
+    const runner = new JavaRunner({ homeDir: tmp });
+
+    // 构造三条记录：真活着、pid 被复用、进程已消失
+    const runs = [
+        { id: 'a', pid: 100, mainClass: 'com.x.FooApplication', alive: true },
+        { id: 'b', pid: 200, mainClass: 'com.x.BarApplication', alive: true },
+        { id: 'c', pid: 300, mainClass: 'com.x.BazApplication', alive: true },
+    ];
+    // jps 看到的现状：100 还是 Foo；200 变成了别的程序；300 完全不在
+    const pidToMain = new Map([
+        [100, 'com.x.FooApplication'],
+        [200, 'com.other.SomethingElse'],
+    ]);
+
+    const verdict = runner.verifyAlive(runs, pidToMain);
+    assert.equal(verdict.get('a'), undefined, '真活着的不应被改判');
+    assert.equal(verdict.get('b'), false, 'pid 被复用的应判为已退出');
+    assert.equal(verdict.get('c'), false, 'jps 里没有的应判为已退出');
+});
+
+await ok('verifyAlive 在拿不到 jps 数据时保守处理（不改判）', async () => {
+    const { JavaRunner } = await load('src/java-runner.js');
+    const runner = new JavaRunner({ homeDir: tmp });
+    const runs = [{ id: 'a', pid: 100, mainClass: 'com.x.Foo', alive: true }];
+    // 空 Map / 非 Map 都不应误判
+    assert.equal(runner.verifyAlive(runs, new Map()).size, 0, '空映射不应改判');
+    assert.equal(runner.verifyAlive(runs, undefined).size, 0, 'undefined 不应崩');
+});
+
+await ok('java/forget 路由可用，且不存在的记录给出明确错误', async () => {
+    const route = registered.routes[0];
+    const req = {
+        url: `/dsh-api-runner/api/java/forget?cwd=${encodeURIComponent(projectDir)}`,
+        method: 'POST',
+        headers: {},
+        async *[Symbol.asyncIterator]() {
+            yield Buffer.from(JSON.stringify({ id: 'no-such-run' }));
+        },
+    };
+    const res = createMockResponse();
+    await route.handler(req, res);
+    const payload = JSON.parse(res.body);
+    // 不存在的记录应给出 RUN_NOT_FOUND，而不是路由缺失的 404
+    assert.equal(payload.ok, false, res.body);
+    assert.ok(['RUN_NOT_FOUND', 'NO_RUNNER'].includes(payload.code), `应走 forget 逻辑：${res.body}`);
+});
+
 await ok('工具支持 db action 与相关参数', () => {
     const tool = registered.tools[0];
     const props = tool.parameters.properties;
