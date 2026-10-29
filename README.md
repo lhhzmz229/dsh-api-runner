@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.9`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.10`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,29 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.9 升级到 0.3.10
+
+0.3.10 修了一个**让「读写」授权形同虚设**的问题。
+
+之前 `main.js` 对模型的 `db_action=query` **写死了 `readonly: true`**——
+无论你在面板里授了「读写」，模型都只能读。所以你会看到「我明明设了读写，
+模型还是说模型侧只读、建不了表」。
+
+现在权限**跟随项目授权等级**：
+
+| 授权等级 | 模型能做什么 |
+| --- | --- |
+| 未授权 | 什么都不行（`NOT_AUTHORIZED`） |
+| 只读 | 只能 SELECT / SHOW / DESCRIBE / EXPLAIN（写操作 `PERMISSION_DENIED`） |
+| 读写 | 允许写（INSERT / UPDATE / CREATE 等） |
+
+**毁灭性操作仍然一律拒绝**，即使有读写授权：`DROP` / `TRUNCATE` /
+无 `WHERE` 的 `DELETE` 和 `UPDATE` / `GRANT` / `REVOKE`（`DESTRUCTIVE_BLOCKED`）。
+这些请到数据库客户端人工处理。
+
+另外：模型可以用 `db_readonly=true` 显式**降级**为只读，但**不能**用
+`db_readonly=false` 提升权限——权限只由授权等级决定。
 
 ### 从 0.3.8 升级到 0.3.9
 

@@ -186,12 +186,33 @@ await ok('读写授权：无 WHERE 的 DELETE 被拦，带 WHERE 的放行', asy
     assert.equal(count.rows[0].n, 1, '只应删掉 name=a 那条');
 });
 
-await ok('模型侧永远只读（即使请求里写 readonly:false 也被强制为 true）', async () => {
-    // 模拟 main.js 的做法：固定 readonly: true
-    const r = await manager.query(cid, 'DELETE FROM t WHERE name = ?', ['b'], { projectKey: P, readonly: true });
-    assert.equal(r.ok, false);
-    // readonly:true 时，写操作在授权层之后仍会被 classifySql 拦
-    assert.ok(['PERMISSION_DENIED', 'DESTRUCTIVE_BLOCKED', 'READONLY_VIOLATION'].includes(r.code), JSON.stringify(r));
+await ok('读写授权下允许写，只读授权下拒绝（权限跟随授权等级）', async () => {
+    // 当前是 readwrite：带 WHERE 的 DELETE 应放行
+    const write = await manager.query(cid, 'DELETE FROM t WHERE name = ?', ['b'], { projectKey: P, readonly: false });
+    assert.equal(write.ok, true, JSON.stringify(write));
+
+    // 降为 readonly：同样的写操作应被拒
+    manager.setAccess(P, cid, 'readonly');
+    const denied = await manager.query(cid, 'DELETE FROM t WHERE name = ?', ['c'], { projectKey: P, readonly: false });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.code, 'PERMISSION_DENIED', JSON.stringify(denied));
+
+    manager.setAccess(P, cid, 'readwrite');
+});
+
+await ok('可显式降级为只读，但不能靠参数提权', async () => {
+    // 有读写授权时传 readonly:true：应拒绝写
+    const downgraded = await manager.query(cid, 'DELETE FROM t WHERE name = ?', ['x'], { projectKey: P, readonly: true });
+    assert.equal(downgraded.ok, false);
+    assert.equal(downgraded.code, 'READONLY_VIOLATION', JSON.stringify(downgraded));
+
+    // 只读授权时传 readonly:false：仍被拒（参数不能提权）
+    manager.setAccess(P, cid, 'readonly');
+    const cannotEscalate = await manager.query(cid, 'DELETE FROM t WHERE name = ?', ['y'], { projectKey: P, readonly: false });
+    assert.equal(cannotEscalate.ok, false);
+    assert.equal(cannotEscalate.code, 'PERMISSION_DENIED', JSON.stringify(cannotEscalate));
+
+    manager.setAccess(P, cid, 'readwrite');
 });
 
 manager.dispose();

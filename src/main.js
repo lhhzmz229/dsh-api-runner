@@ -45,9 +45,14 @@ const TOOL_DESCRIPTION = `开发联调工具（dsh-api-runner）：按配置调�
 
 安全约束（务必遵守）：
 - 只有**已被当前项目授权**的连接才会出现在 describe 里；未授权的连接查不到也调不动。
-- 模型侧**永远只读**：只允许 SELECT / SHOW / DESCRIBE / EXPLAIN 等查询。
-  传 db_readonly=false 也不会放开写操作——写数据只能由人在面板里做。
-- DROP / TRUNCATE / 无 WHERE 的 DELETE 等毁灭性操作一律拒绝。
+- 能读还是能写，**取决于项目授权等级**（面板「项目授权」里设的）：
+  - 只读 → 只允许 SELECT / SHOW / DESCRIBE / EXPLAIN 等查询，写操作会被拒
+  - 读写 → 允许写（INSERT / UPDATE / CREATE 等），但**毁灭性操作仍拒绝**
+  - 未授权 → 什么都不行
+  如果用户说「我已经设了读写」但你仍然只能读，说明该连接在当前项目的授权没生效，
+  让对方到「数据库 → 项目授权」确认那一行显示的是「读写」。
+- **毁灭性操作即使有读写权限也一律拒绝**：DROP / TRUNCATE / 无 WHERE 的 DELETE 和 UPDATE /
+  GRANT / REVOKE。这些请让用户到数据库客户端人工处理。
 
 编译 Java 代码：**不要自己在沙箱里跑 mvn / gradle**。
 - 沙箱对工作区的 target/ 等构建目录常常是只读的，直接跑 mvn 会撞 ACL 拒绝
@@ -126,7 +131,7 @@ const PARAMETERS = {
         },
         db_readonly: {
             type: 'boolean',
-            description: '（已废弃，保留仅为兼容）模型侧永远只读，传 false 也不会放开写操作。写数据只能由人在面板里操作。',
+            description: 'db_action=query 时是否按只读执行。默认跟随项目授权等级（读写就允许写）；传 true 可显式降级为只读。不能用来提升权限。',
         },
         connection: {
             type: 'object',
@@ -328,11 +333,22 @@ async function runTool(service, args, projectPath) {
                 if (!args.sql) return { ok: false, code: 'MISSING_ARGUMENT', message: 'db_action=query 需要 sql' };
                 return service.dbQuery(String(args.connection_id), String(args.sql), Array.isArray(args.db_params) ? args.db_params : [], {
                     /**
-                     * 模型侧**永远只读**：不接受 args 里传的 db_readonly=false。
-                     * 写操作只能由人在面板里做（面板走的是另一条带 UI 确认的路径）。
-                     * 这样即使模型被诱导，也删不掉任何数据。
+                     * 读写能力**由项目授权等级决定**，不由模型参数决定。
+                     *
+                     * 之前这里写死 readonly:true，等于无论用户授了「读写」都只能读——
+                     * 用户在面板里授权了读写，模型却一直说「模型侧是只读」，实际用不了。
+                     *
+                     * 规则：
+                     *   - 授权 readwrite → readonly:false，允许写（但仍受 classifySql 与
+                     *     毁灭性操作两层拦截，DROP/TRUNCATE/无 WHERE 的 DELETE 照样拒绝）
+                     *   - 只读 / 未授权 → readonly:true
+                     *   - 模型不能通过 args.db_readonly 提升权限，只能显式降级为只读
                      */
-                    readonly: true,
+                    readonly: service.dbAccessLevel
+                        ? (service.dbAccessLevel(projectKey, String(args.connection_id)) === 'readwrite'
+                            ? args.db_readonly === true
+                            : true)
+                        : true,
                     projectKey,
                     maxRows: args.max_lines ? Number(args.max_lines) : undefined,
                     timeoutMs,

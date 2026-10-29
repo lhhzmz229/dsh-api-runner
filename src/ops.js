@@ -1289,6 +1289,18 @@ export class ApiRunnerService {
         return this.dbManager.setAccess(projectKey, connectionId, level);
     }
 
+    /**
+     * 查某项目对某连接的授权等级：'none' | 'readonly' | 'readwrite'。
+     *
+     * 模型侧的读写能力由这个等级决定（见 main.js 的 db_action=query），
+     * 而不是写死只读。数据库模块不可用时按 'none' 处理，最保守。
+     */
+    dbAccessLevel(projectKey, connectionId) {
+        if (!this.dbManager) return 'none';
+        const row = this.dbManager.accessOf(projectKey);
+        return row[String(connectionId)] || 'none';
+    }
+
     dispose() {
         this.logReader.dispose();
         this.serviceManager.dispose();
