@@ -448,6 +448,19 @@ await ok('工具描述里提到 login 与 java', () => {
     assert.ok(tool.parameters.properties.java_ids, '应有 java_ids 参数');
 });
 
+await ok('工具描述提醒「不要自己在沙箱里跑 mvn」', () => {
+    const tool = registered.tools[0];
+    const desc = String(tool.description || '');
+    /**
+     * 用户反馈：模型默认在沙箱里跑 mvn，撞 target/ 的 ACL 拒绝，
+     * 白白耗了好几轮去修权限，最后才改用插件的编译链路。
+     * 提示词必须明确指向 java_action=restart。
+     */
+    assert.ok(/不要.*沙箱.*mvn|沙箱.*只读|ACL/.test(desc), '应提醒沙箱里跑 mvn 会被拒');
+    assert.ok(/java_action=restart/.test(desc), '应指向插件的编译重启链路');
+    assert.ok(/先.*编译|编译.*再/.test(desc), '应说明插件会先编译再重启');
+});
+
 await ok('java_action 有 forget（清理幽灵接管记录）', () => {
     const tool = registered.tools[0];
     const enumList = tool.parameters.properties.java_action.enum;

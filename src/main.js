@@ -49,6 +49,19 @@ const TOOL_DESCRIPTION = `开发联调工具（dsh-api-runner）：按配置调�
   传 db_readonly=false 也不会放开写操作——写数据只能由人在面板里做。
 - DROP / TRUNCATE / 无 WHERE 的 DELETE 等毁灭性操作一律拒绝。
 
+编译 Java 代码：**不要自己在沙箱里跑 mvn / gradle**。
+- 沙箱对工作区的 target/ 等构建目录常常是只读的，直接跑 mvn 会撞 ACL 拒绝
+  （"target 下编译状态文件被拒访问"），白白耗掉好几轮去修权限。
+- 正确做法：改完代码直接 action=java + java_action=restart（或 start / start_saved），
+  插件会**先 mvn 编译、再杀旧进程、再拉起**，编译在插件进程里跑、不受沙箱限制。
+  它返回 compile 结果，编译失败会明确告诉你，不会悄悄跳过。
+- 只想验证能编译、不想重启时，java_action=restart + compile=true 仍然是首选；
+  确实需要在沙箱里跑 mvn 时，先把构建输出目录指到可写位置（如 -Dmaven.repo.local 与
+  自定义 target 目录），否则大概率被拒。
+- 插件编译用的是它自己探测/配置的 Maven（设置里可指定 mavenHome），
+  和你 PATH 里的 mvn 可能不是同一个；不要因为「我这边 mvn 能跑」就假定插件也能，
+  反之亦然——以插件返回的 compile 结果为准。
+
 什么时候该用 db：
 - 需要确认数据是否真的写进去了（接口返回成功但不确认落库）。
 - 排查数据问题：某条记录状态不对、关联数据缺失、字段值与预期不符。
@@ -463,6 +476,7 @@ export function apply(ctx) {
                             services ? `\n服务：\n${services}` : '',
                             logs ? `\n日志：\n${logs}` : '',
                             databases ? `\n数据库（可用 action=db 直接查询，默认只读）：\n${databases}\n需要看表结构时用 db_action=list_tables / describe_table；查数据用 db_action=query + sql（用 db_params 传参，别拼字符串）。` : '',
+                            services ? `\n编译：改完 Java 代码**不要**自己在沙箱里跑 mvn/gradle——沙箱对 target/ 等构建目录常是只读的，会撞 ACL 拒绝。直接 action=java + java_action=restart，插件会先编译再重启（编译在插件进程里跑，不受沙箱限制），并返回 compile 结果。` : '',
                         ].join('\n');
                     } catch {
                         return '';
