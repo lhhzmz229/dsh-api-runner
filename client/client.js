@@ -2743,30 +2743,70 @@ window.__ModuleLoader__.load({
             }, GlobalPanel)), 'dsh-api-runner: main panel');
 
             /**
-             * 右侧栏页签：三件事都要注册，少一件就出不来。
+             * 右侧栏页签：**必须注册页签类型（含 guide 卡片），而不是只注册 slot**。
              *
-             * 之前这里调 `ctx.get('sidebarRightTabs')` 注册「页签类型」——
-             * 但 DSH 根本没有这个服务，拿到 undefined 就直接 return 了，
-             * 结果正文和标题注册了、**卡片没注册**，右侧栏里永远看不到入口。
-             * （用户反馈：左侧有「接口调试」，右侧栏只有三张默认卡片。）
+             * 我从 DSH 的 sidebar-right 实现里确认了机制（app.asar 里的
+             * @deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js）：
              *
-             * 正确机制是三个 keyed 席位，都用同一个 key：
-             *   1. sidebar.right.tab.guide.entry —— 右侧栏空态/新建页签时的那张卡片
-             *   2. sidebar.right.pane.tab        —— 页签正文
-             *   3. sidebar.right.pane.tab.title  —— 页签标题（chip 上显示的字）
+             *   const disposeRegistry = ctx.reflect.provide("sidebarRightTabs", tabs);
+             *   ...
+             *   this.guideEntries = this.cached.flatMap((definition) =>
+             *     (definition.guide ?? []).map((entry) => ({ ...entry })));
+             *
+             * 也就是说：右侧栏的卡片**来自页签类型定义的 `guide` 数组**，
+             * 不是来自 `sidebar.right.tab.guide.entry` 这个 slot。
+             * 只注册 guide.entry 卡片不会出现在引导页上（我踩过这个坑）。
+             *
+             * 而 `ctx.get('sidebarRightTabs')` 是能拿到的（cordis 的 get 读
+             * reflect.provide 注册的服务），但**要求提供方 fiber 已激活**
+             * （get 里 `if (strict && impl.fiber.state !== 2) return;`）。
+             * 插件加载时右侧栏插件可能还没起来，所以不能只查一次——
+             * 用 ctx.on 监听服务就绪事件，等到再注册。
              */
-            ctx.effect(() => wait('sidebar.right.tab.guide.entry', () => slots.register({
-                name: 'sidebar.right.tab.guide.entry',
-                key: TAB_ID,
-                order: 42,
-            }, (props) => h('div', { className: 'ar-guide-card' },
-                h('div', { className: 'ar-guide-icon' }, h(PanelIcon, { size: 20, active: false })),
-                h('div', { className: 'ar-guide-text' },
-                    h('div', { className: 'ar-guide-title' }, (props && props.title) || '接口调试'),
-                    h('div', { className: 'ar-guide-desc' },
-                        (props && props.description) || '配置接口、登录保存 token、调用测试、查看本机 Java 服务'))))),
-                'dsh-api-runner: right tab guide card');
+            ctx.effect(() => {
+                let registered = false;
+                let disposeType;
+                const tryRegister = () => {
+                    if (registered) return true;
+                    const tabs = typeof ctx.get === 'function' ? ctx.get('sidebarRightTabs') : undefined;
+                    if (!tabs || typeof tabs.register !== 'function') return false;
+                    try {
+                        disposeType = tabs.register({
+                            id: TAB_ID,
+                            kind: TAB_ID,
+                            title: () => '接口调试',
+                            // 这张就是右侧栏引导页上的卡片
+                            guide: [{
+                                id: TAB_ID,
+                                order: 42,
+                                title: () => '接口调试',
+                                description: () => '配置接口、登录保存 token、调用测试、查看本机 Java 服务',
+                            }],
+                        }) ?? (() => {});
+                        registered = true;
+                        return true;
+                    } catch {
+                        // id/kind 冲突等：下次服务变化时再试
+                        return false;
+                    }
+                };
 
+                tryRegister();
+                // 服务晚于插件就绪时补一次
+                const off = typeof ctx.on === 'function'
+                    ? ctx.on('internal/service', () => { tryRegister(); })
+                    : undefined;
+
+                return () => {
+                    if (typeof off === 'function') off();
+                    try { if (typeof disposeType === 'function') disposeType(); } catch { /* 已卸载 */ }
+                };
+            }, 'dsh-api-runner: right tab type');
+
+            /**
+             * 页签正文和标题：这两个是 keyed slot，按 kind 分发。
+             * 它们和上面的页签类型一起，三件齐了右侧栏才完整。
+             */
             ctx.effect(() => wait('sidebar.right.pane.tab', () => slots.register({
                 name: 'sidebar.right.pane.tab',
                 key: TAB_ID,

@@ -81,19 +81,36 @@ function makeSlots(options = {}) {
     return { slots, registrations, injected };
 }
 
-// apply：只提供 slots 的 ctx，断言注册落在宿主自带的席位上
+// apply：提供 slots + sidebarRightTabs，断言右侧栏页签类型和 slot 都注册上
 const first = makeSlots();
 const effects = [];
+const tabTypes = [];
 const ctx = {
     /**
-     * 只暴露 slots。
+     * 必须提供 `sidebarRightTabs`。
      *
-     * 注意：**不要**再 mock `sidebarRightTabs` —— DSH 没有这个服务。
-     * 之前代码依赖它，拿到 undefined 就 return，导致右侧栏页签的入口卡片
-     * 从没注册过，用户右侧栏里看不到「接口调试」（左侧却有）。
-     * 现在右侧栏靠三个 keyed 席位注册，这里也不再需要那个假服务。
+     * 我从 DSH 的 app.asar 里确认过：右侧栏引导页的卡片来自**页签类型定义的
+     * `guide` 数组**（`guideEntries = cached.flatMap(d => d.guide ?? [])`），
+     * 不是来自 `sidebar.right.tab.guide.entry` 这个 slot。
+     * 只注册 slot 的话卡片不会出现在引导页上（踩过这个坑）。
+     *
+     * 服务由 `ctx.reflect.provide("sidebarRightTabs", tabs)` 提供，
+     * cordis 的 `ctx.get` 能读到，但要求提供方 fiber 已激活——
+     * 所以插件必须等它就绪，不能只查一次。
      */
-    get: (name) => (name === 'slots' ? first.slots : undefined),
+    get: (name) => {
+        if (name === 'slots') return first.slots;
+        if (name === 'sidebarRightTabs') {
+            return {
+                register: (definition) => {
+                    tabTypes.push(definition);
+                    return () => {};
+                },
+            };
+        }
+        return undefined;
+    },
+    on: () => () => {},
     effect: (callback, label) => {
         effects.push(label);
         return callback();
@@ -103,8 +120,8 @@ recorded.exports.apply(ctx);
 
 assert.deepEqual(
     first.injected,
-    ['sidebar.panellist', 'main', 'sidebar.right.tab.guide.entry', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'settings.section'],
-    '每个席位都要通过 slots.inject 等待声明就绪（右侧栏要三个：入口卡片/正文/标题）',
+    ['sidebar.panellist', 'main', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'settings.section'],
+    '每个席位都要通过 slots.inject 等待声明就绪（右侧栏是正文+标题两个 slot，卡片靠页签类型）',
 );
 
 const byName = (name) => first.registrations.filter((item) => item.descriptor.name === name);
@@ -127,23 +144,32 @@ assert.equal(sections[0].descriptor.id, 'dsh-api-runner');
 assert.equal(sections[0].descriptor.label(), '接口调试');
 
 /**
- * 右侧栏三个席位都要注册（都用同一个 key）。
+ * 右侧栏：页签类型（含 guide 卡片）+ 正文 slot + 标题 slot。
  *
- * 这是用户报过的 bug：右侧栏只注册了正文和标题、没注册入口卡片，
- * 结果右侧栏里根本看不到「接口调试」，左侧却有。
+ * 用户报过的 bug：右侧栏只注册了正文和标题、没注册页签类型，
+ * 结果引导页上根本没有「接口调试」卡片，左侧却有入口。
+ *
+ * 关键：卡片来自**页签类型的 `guide` 数组**（DSH 的 guideEntries
+ * 就是 flatMap 各个 definition.guide），不是 guide.entry slot。
  */
-for (const slotName of ['sidebar.right.tab.guide.entry', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title']) {
+assert.equal(tabTypes.length, 1, '应向 sidebarRightTabs 注册一个页签类型');
+const tabType = tabTypes[0];
+assert.equal(tabType.id, 'dsh-api-runner');
+assert.equal(tabType.kind, 'dsh-api-runner');
+assert.equal(tabType.title(), '接口调试');
+assert.ok(Array.isArray(tabType.guide) && tabType.guide.length > 0, '页签类型必须带 guide 卡片定义');
+const card = tabType.guide[0];
+assert.equal(card.id, 'dsh-api-runner');
+assert.equal(card.title(), '接口调试');
+assert.equal(typeof card.description, 'function');
+assert.ok(card.description().length > 0, '卡片应有描述文字');
+
+// 正文和标题 slot
+for (const slotName of ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title']) {
     const entries = byName(slotName);
     assert.equal(entries.length, 1, `应注册 ${slotName}`);
     assert.equal(entries[0].descriptor.key, 'dsh-api-runner', `${slotName} 的 key 应是 dsh-api-runner`);
     assert.ok(entries[0].render, `${slotName} 应有可渲染组件`);
-}
-
-// 入口卡片能渲染（宿主会传 title/description，也可能不传）
-const guideCard = byName('sidebar.right.tab.guide.entry')[0];
-for (const props of [{ title: '接口调试', description: 'desc' }, {}, undefined]) {
-    const el = guideCard.render(props);
-    assert.ok(el, `入口卡片应能渲染（props=${JSON.stringify(props)}）`);
 }
 
 // 设置页能渲染
@@ -308,7 +334,7 @@ recorded.exports.apply({
     get: (name) => (name === 'slots' ? second.slots : undefined),
     effect: (callback) => callback(),
 });
-// 席位：panellist / main / guide.entry / right.pane.tab / right.pane.tab.title / settings.section
-assert.equal(second.registrations.length, 6, '没有 inject 时也要把六个席位都注册上');
+// 席位：panellist / main / right.pane.tab / right.pane.tab.title / settings.section
+assert.equal(second.registrations.length, 5, '没有 inject 时也要把五个席位都注册上');
 
 console.log('PASSED: client bundle shape');

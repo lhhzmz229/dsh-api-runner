@@ -44,7 +44,7 @@ DSH 插件：把「后端接口清单」「本地服务启停」「日志增量�
 dsh plugin --profile web add dsh-api-runner
 ```
 
-npm 上已发布 `dsh-api-runner@0.3.7`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
+npm 上已发布 `dsh-api-runner@0.3.8`，这条是推荐路径，也是 DSH「插件中心」里一键安装的形式。
 
 ### 从 GitHub 源码安装
 
@@ -76,6 +76,29 @@ DSH 会把仓库 clone 到 profile 的 `node_modules` 下。写成带包名的
 3. **新增 query 编辑栏**。以前只能把 `?a=b` 塞进「路径」输入框，但没人会想到这么做。现在有独立的 query（JSON）栏，支持 `{占位}`，清空即删除。
 
 数据本身不用迁移：之前被抹掉的 `query` 需要你重新填一次（或从 YAML 恢复）。
+
+### 从 0.3.7 升级到 0.3.8
+
+0.3.8 修正了 0.3.7 里对右侧栏入口的**错误改法**。
+
+0.3.7 说「DSH 没有 `sidebarRightTabs` 服务」并删掉了页签类型注册——**这个判断是错的**。
+解包 `app.asar` 读 `@deepseek-ai/dsh-client-ui-sidebar-right/lib/client.js` 后确认：
+
+```js
+// 第 4966 行：服务是存在的
+const disposeRegistry = ctx.reflect.provide("sidebarRightTabs", tabs);
+
+// 第 4735 行：引导页的卡片来自页签类型的 guide 数组
+this.guideEntries = this.cached.flatMap((definition) =>
+  (definition.guide ?? []).map((entry) => ({ ...entry })));
+```
+
+所以卡片**必须**通过 `sidebarRightTabs.register({ ..., guide: [...] })` 注册，
+只注册 `sidebar.right.tab.guide.entry` slot 不会出现在引导页上。
+
+`ctx.get('sidebarRightTabs')` 之前返回 `undefined` 的真实原因是**时序**：
+cordis 的 `get` 要求提供方 fiber 已激活（`impl.fiber.state !== 2` 时返回 undefined），
+插件加载时右侧栏插件可能还没起来。现在改成「先试一次 + 监听服务就绪后补注册」。
 
 ### 从 0.3.6 升级到 0.3.7
 
